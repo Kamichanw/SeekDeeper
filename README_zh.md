@@ -30,6 +30,11 @@
       <td><a href="https://cdn.openai.com/research-covers/language_models_are_unsupervised_multitask_learners.pdf">Language Models are Unsupervised Multitask Learners</a></td>
     </tr>
     <tr>
+      <td>ViT</td>
+      <td><a href="https://arxiv.org/pdf/2010.11929">An Image is Worth 16x16 Words: Transformers for Image Recognition at Scale</a></td>
+      <td><a href="https://github.com/huggingface/transformers/blob/main/src/transformers/models/vit/modeling_vit.py">Huggingface ViT implementation</a></td>
+    </tr>
+    <tr>
       <td>GAN</td>
       <td><a href="https://arxiv.org/abs/1406.2661">Generative Adversarial Networks</a></td>
       <td><a href="https://github.com/goodfeli/adversarial">https://github.com/goodfeli/adversarial</a></td>
