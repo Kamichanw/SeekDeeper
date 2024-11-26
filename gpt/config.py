@@ -23,7 +23,7 @@ dropout = 0.1
 class PretrainConfig:
     n_epoch = 100
     batch_size = 16
-    update_freq = 4
+    accumulate_grad_batches = 4
     lr = 2.5e-4
     warmup_steps = 2000
 
@@ -32,7 +32,7 @@ class PretrainConfig:
 class FinetuningConfig:
     n_epoch = 3
     batch_size = 32
-    update_freq = 1
+    accumulate_grad_batches = 1
     lr = 6.25e-5
     clf_loss_weight = 0.5
     warmup_steps = 0.2 / 100

@@ -43,6 +43,49 @@ class ViTEmbeddings(nn.Module):
         )
         self.dropout = nn.Dropout(dropout)
 
+    def interpolate_pos_encoding(self, embeddings, height, width):
+        """
+        This method allows to interpolate the pre-trained position encodings, to be able to use the model on higher
+        resolution images.
+
+        Source:
+        https://github.com/facebookresearch/dino/blob/de9ee3df6cf39fac952ab558447af1fa1365362a/vision_transformer.py#L174
+        """
+
+        num_patches = embeddings.shape[1] - 1
+        num_positions = self.position_embeddings.shape[1] - 1
+        if num_patches == num_positions and height == width:
+            return self.position_embeddings
+        class_pos_embed = self.position_embeddings[:, 0]
+        patch_pos_embed = self.position_embeddings[:, 1:]
+        dim = embeddings.shape[-1]
+        h0 = height // self.patch_embeddings.patch_size
+        w0 = width // self.patch_embeddings.patch_size
+        # we add a small number to avoid floating point error in the interpolation
+        # see discussion at https://github.com/facebookresearch/dino/issues/8
+        h0, w0 = h0 + 0.1, w0 + 0.1
+
+        # shape: [1, num_patch, hidden_dim] -> [1, num_patch_per_row, num_patch_per_col, hidden_dim]
+        patch_pos_embed = patch_pos_embed.reshape(
+            1, int(math.sqrt(num_positions)), int(math.sqrt(num_positions)), dim
+        )
+
+        patch_pos_embed = patch_pos_embed.permute(0, 3, 1, 2)
+        patch_pos_embed = nn.functional.interpolate(
+            patch_pos_embed,
+            scale_factor=(h0 / math.sqrt(num_positions), w0 / math.sqrt(num_positions)),
+            mode="bicubic",
+            align_corners=False,
+        )
+        assert (
+            int(h0) == patch_pos_embed.shape[-2]
+            and int(w0) == patch_pos_embed.shape[-1]
+        )
+
+        # shape: [1, hidden_dim, num_patch_per_row, num_patch_per_col] -> [1, num_patch_per_row, num_patch_per_col, hidden_dim]
+        patch_pos_embed = patch_pos_embed.permute(0, 2, 3, 1).view(1, -1, dim)
+        return torch.cat((class_pos_embed.unsqueeze(0), patch_pos_embed), dim=1)
+
     def forward(self, pixel_values):
         batch_size, num_channels, height, width = pixel_values.shape
         embeddings = self.patch_embeddings(pixel_values)
@@ -51,10 +94,16 @@ class ViTEmbeddings(nn.Module):
         cls_tokens = self.cls_token.expand(batch_size, -1, -1)
         embeddings = torch.cat((cls_tokens, embeddings), dim=1)
 
-        return self.dropout(embeddings + self.position_embeddings)
+        # 2d interpolate to resize positional embeddings
+        return self.dropout(
+            embeddings + self.interpolate_pos_encoding(embeddings, height, width)
+        )
 
 
 class SelfAttention(nn.Module):
+    """
+    Standard self-attention operation, without any modifications
+    """
     def __init__(self, hidden_size, num_attention_heads, dropout):
         super().__init__()
         self.num_attention_heads = num_attention_heads
@@ -92,10 +141,10 @@ class SelfAttention(nn.Module):
             )
         else:
             att = torch.matmul(q, k.transpose(-1, -2)) / math.sqrt(nd)
-            att = F.softmax(dim=-1)(att)
+            att = F.softmax(att, dim=-1)
             att = self.dropout(att)
+            y = torch.matmul(att, v) # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
 
-        y = torch.matmul(att, v)
         # re-assemble all head outputs side by side
         y = att.transpose(1, 2).contiguous().view(bsz, -1, self.all_head_size)
 

@@ -93,7 +93,7 @@ x = layer_norm(x + residual)
 
 ## Training Strategy
 ### Training Data and Batching
-[Attention is all you need](https://arxiv.org/pdf/1706.03762) Sec 5.1 mentions that the training set used is WMT 2014, with approximately 25k source tokens and 25k target tokens in each training batch, resulting in 6,230 batches. The average batch size is 724, and the average length is 45 tokens. Considering the GPU memory constraints, gradient accumulation is needed to ensure sufficient tokens in each batch, updating gradients every `update_freq` rounds.
+[Attention is all you need](https://arxiv.org/pdf/1706.03762) Sec 5.1 mentions that the training set used is WMT 2014, with approximately 25k source tokens and 25k target tokens in each training batch, resulting in 6,230 batches. The average batch size is 724, and the average length is 45 tokens. Considering the GPU memory constraints, gradient accumulation is needed to ensure sufficient tokens in each batch, updating gradients every `accumulate_grad_batches` rounds.
 
 The paper also mentions training the base transformer for 100,000 iterations, which should correspond to 16 epochs under this setting.
 

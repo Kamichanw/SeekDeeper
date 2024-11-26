@@ -10,7 +10,7 @@ os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(
 torch.manual_seed(3407)
 
 batch_size = 8
-update_freq = 64
+accumulate_grad_batches = 64
 # gpt-2
 max_len = 1024
 vocab_size = 50257

@@ -19,7 +19,7 @@ dropout = 0.1
 
 # training setting
 batch_size = 32
-update_freq = 16
+accumulate_grad_batches = 16
 epochs = 20
 eps_ls = 0.1  # eps for label smoothing
 warmup_step = 4000

@@ -91,10 +91,15 @@ class ViTForImageClassification(nn.Module):
             dropout=dropout,
         )
         self.classifier = nn.Linear(hidden_size, num_labels)
-        self.classifier.weight.data = nn.init.trunc_normal_(
-            self.classifier.weight.data.to(torch.float32), mean=0.0, std=0.02
-        ).to(self.classifier.weight.dtype)
-        self.classifier.bias.data.zero_()
+
+        # There are various ways to initialize classifier
+        # In HF, classifier will be initialized to a truncated normal distribution with mean=0, stddev=0.02
+        # In PyTorch, classifier will be initialized to a zero initialized linear layer.
+        # In original paper, classifier should be a zero-initialized matrix without bias.
+        # Anyway, we will replace it to be consistent with paper later, so it doesn’t matter how initialize it here.
+        
+        nn.init.normal_(self.classifier.weight, 0, 0.02)
+        nn.init.zeros_(self.classifier.bias)
 
     def forward(self, pixel_values):
         hidden_states = self.vit(pixel_values)
@@ -182,38 +187,3 @@ class ViTForImageClassification(nn.Module):
                 sd[k].copy_(sd_hf[k])
 
         return model
-
-    def configure_optimizers(
-        self, lr, weight_decay, betas=(0.9, 0.999), device_type=None
-    ):
-        # Get all parameters and filter those that require gradient
-        param_dict = {pn: p for pn, p in self.named_parameters() if p.requires_grad}
-
-        # Separate decay and no-decay parameter groups
-        decay_params = [p for n, p in param_dict.items() if p.dim() >= 2]
-        nodecay_params = [p for n, p in param_dict.items() if p.dim() < 2]
-
-        optim_groups = [
-            {"params": decay_params, "weight_decay": weight_decay},
-            {"params": nodecay_params, "weight_decay": 0.0},
-        ]
-
-        # Print parameter counts
-        num_decay_params = sum(p.numel() for p in decay_params)
-        num_nodecay_params = sum(p.numel() for p in nodecay_params)
-        print(
-            f"Num decayed parameter tensors: {len(decay_params)}, with {num_decay_params:,} parameters"
-        )
-        print(
-            f"Num non-decayed parameter tensors: {len(nodecay_params)}, with {num_nodecay_params:,} parameters"
-        )
-
-        # Use fused AdamW if available
-        fused_available = "fused" in torch.optim.AdamW.__init__.__code__.co_varnames
-        use_fused = fused_available and device_type == "cuda"
-        extra_args = dict(fused=True) if use_fused else dict()
-
-        optimizer = torch.optim.AdamW(optim_groups, lr=lr, betas=betas, **extra_args)
-        print(f"Using fused AdamW: {use_fused}")
-
-        return optimizer

@@ -93,7 +93,7 @@ x = layer_norm(x + residual)
 
 ## Training Strategy
 ### Training Data and Batching
-[Attention is all you need](https://arxiv.org/pdf/1706.03762) Sec 5.1 提到，训练集使用的是 WMT 2014，每一个训练批次有大约 25k source tokens 和 25k target tokens，结果产生了 6,230 个批次。平均批次大小为 724，平均长度为 45 个 tokens。考虑到 GPU 显存不足，为了确保每个批次都有足够的 tokens，因此需要采取梯度累积策略，每 `update_freq` 轮才更新一次梯度。
+[Attention is all you need](https://arxiv.org/pdf/1706.03762) Sec 5.1 提到，训练集使用的是 WMT 2014，每一个训练批次有大约 25k source tokens 和 25k target tokens，结果产生了 6,230 个批次。平均批次大小为 724，平均长度为 45 个 tokens。考虑到 GPU 显存不足，为了确保每个批次都有足够的 tokens，因此需要采取梯度累积策略，每 `accumulate_grad_batches` 轮才更新一次梯度。
 
 论文还提到对 base transformer 进行了 100,000 次迭代训练，这应该对应于 16 个 epochs。
 
