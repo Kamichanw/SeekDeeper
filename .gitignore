@@ -3,3 +3,4 @@ checkpoints/
 **/datasets/**
 !**/datasets/**/*.py
 !**/datasets/**/*.json
+.idea/
