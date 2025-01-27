@@ -1,8 +1,7 @@
 import torch.nn as nn
 
-from bert.modules.embedding import BERTEmbedding
-from bert.modules.transformer_encoder import TransformerBlock
-
+from .embedding import BERTEmbedding
+from .transformer_encoder import TransformerBlock
 
 class BERT(nn.Module):
     """
@@ -33,6 +32,7 @@ class BERT(nn.Module):
         # multi-layers transformer blocks, deep network
         self.transformer_blocks = nn.ModuleList(
             [TransformerBlock(hidden, attn_heads, hidden * 4, dropout) for _ in range(n_layers)])
+
 
     def forward(self, x, segment_info):
         # attention masking for padded token
