@@ -1,11 +1,16 @@
-from torch.utils.data import Dataset
-import tqdm
-import torch
-import random
-import pickle
-from collections import Counter
-import config
 import os
+import pickle
+import random
+from collections import Counter
+
+import torch
+import tqdm
+from torch.utils.data import DataLoader
+from torch.utils.data import Dataset
+from transformers import BertTokenizer
+
+import config
+from datasets import load_dataset
 
 
 class BERTDataset(Dataset):
@@ -58,7 +63,9 @@ class BERTDataset(Dataset):
         t1_label = [self.vocab.pad_index] + t1_label + [self.vocab.pad_index]
         t2_label = t2_label + [self.vocab.pad_index]
 
-        segment_label = ([1 for _ in range(len(t1))] + [2 for _ in range(len(t2))])[:self.seq_len]
+        # segment_label = ([1 for _ in range(len(t1))] + [2 for _ in range(len(t2))])[:self.seq_len]
+        # 0 for sentence A, 1 for sentence B
+        segment_label = ([0 for _ in range(len(t1))] + [1 for _ in range(len(t2))])[:self.seq_len]
         bert_input = (t1 + t2)[:self.seq_len]
         bert_label = (t1_label + t2_label)[:self.seq_len]
 
@@ -112,7 +119,6 @@ class BERTDataset(Dataset):
 
     def get_corpus_line(self, item):
         print("get_corpus_line:item:", item)
-        print("get_corpus_line:self.lines:", self.lines)
         if self.on_memory:
             return self.lines[item][0], self.lines[item][1]
         else:
@@ -248,6 +254,7 @@ class Vocab(TorchVocab):
             return pickle.load(f)
 
     def save_vocab(self, vocab_path):
+        os.makedirs(os.path.dirname(vocab_path), exist_ok=True)
         with open(vocab_path, "wb") as f:
             pickle.dump(self, f)
 
@@ -319,5 +326,98 @@ def build():
     vocab.save_vocab(config.vocab_path)
 
 
-if __name__ == '__main__':
-    build()
+def _load_sst2(tokenizer, loading_ratio, num_proc, splits, **kwargs):
+    """
+    load and return SST-2 's DataLoader
+    :param tokenizer:  text process, BERT tokenizer
+    :param loading_ratio: ratio of loading data
+    :param num_proc: number of processes for data loading
+    :param splits: split of data (such as "train", "validation"）
+    :param kwargs: other parameters
+    :return: DataLoaders' list
+    """
+
+    # check splits
+    if not splits or splits != ["train", "validation"]:
+        raise ValueError('Splits must be ["train", "validation"] or None.')
+
+    # load with function from datasets library
+    dataset = load_dataset("glue", "sst2", num_proc=num_proc)
+    # compute subset size
+    total_samples = len(dataset["train"])  # 80137 rows
+    subset_size = int(loading_ratio * total_samples)
+
+    train_size = len(dataset["train"])
+    valid_size = len(dataset["validation"])
+
+    # make sure subset size is not larger than the original size
+    train_subset_size = min(subset_size, train_size)
+    valid_subset_size = min(subset_size, valid_size)
+
+
+    train_data = dataset["train"].select(range(train_subset_size))
+    valid_data = dataset["validation"].select(range(valid_subset_size))
+
+    def tokenize_function(examples):
+        return tokenizer(examples["sentence"], padding="max_length", truncation=True, max_length=128)
+
+    # tokenization
+    tokenized_train = train_data.map(tokenize_function, batched=True)
+    tokenized_valid = valid_data.map(tokenize_function, batched=True)
+
+    # DataLoader format
+    def collate_fn(batch):
+        input_ids = [item['input_ids'] for item in batch]
+        attention_mask = [item['attention_mask'] for item in batch]
+        labels = [item['label'] for item in batch]
+
+        return (
+            torch.tensor(input_ids, dtype=torch.long),
+            torch.tensor(attention_mask, dtype=torch.long),
+            torch.tensor(labels, dtype=torch.long)
+        )
+
+    dataloaders = []
+
+    # create DataLoader for each split
+    for split_data in [(tokenized_train, "train"), (tokenized_valid, "validation")]:
+        tokenized_split, split_name = split_data
+        dataloaders.append(
+            DataLoader(
+                tokenized_split,
+                batch_size=16,
+                collate_fn=collate_fn,
+                shuffle=split_name == "train",
+            )
+        )
+
+    return dataloaders
+
+
+def load_data(name: str, loading_ratio: float = 1, num_proc: int = 0, splits: list = None, **kwargs):
+    """
+    Load different datasets
+    :param name: name of dataset
+    :param loading_ratio: ratio of loading data
+    :param num_proc: number of processes for data loading
+    :param splits: split of data (such as "train", "validation"）
+    :param kwargs: other parameters
+    :return: tokenizer and dataloaders
+    """
+    # Load model directly
+    from transformers import AutoTokenizer
+
+    tokenizer = AutoTokenizer.from_pretrained("google-bert/bert-base-uncased")
+
+    dispatch = {
+        "sst2": _load_sst2,  # SST-2 load
+    }
+
+    if name.lower() not in dispatch:
+        raise ValueError(f"Unsupported dataset '{name}'. Supported datasets are: {list(dispatch.keys())}")
+
+    if not (0 < loading_ratio <= 1):
+        raise ValueError("Loading ratio should be between 0 and 1")
+
+    # 调用对应的加载函数
+    return tokenizer, *dispatch[name.lower()](tokenizer, loading_ratio, num_proc, splits, **kwargs)

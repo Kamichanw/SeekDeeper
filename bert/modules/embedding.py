@@ -34,13 +34,18 @@ class PositionalEmbedding(nn.Module):
 
 class SegmentEmbedding(nn.Embedding):
     def __init__(self, embed_size=512):
-        # three different segments
-        super().__init__(3, embed_size, padding_idx=0)
+        # three different segments for sentence A-1, B-2 and special tokens 0
+        # super().__init__(3, embed_size, padding_idx=0)
+
+        # consider only two segments A-0 and B-1 since pad 0 wouldn't be counted in due to mask mechanism
+        super().__init__(2, embed_size, padding_idx=0)
 
 
 class TokenEmbedding(nn.Embedding):
-    def __init__(self, vocab_size, embed_size=512):
-        super().__init__(vocab_size, embed_size, padding_idx=0)
+    def __init__(self, vocab_size, embed_size=512,device=None, dtype=None):
+        super().__init__(vocab_size, embed_size, padding_idx=0, device=device, dtype=dtype)
+        self.weight = nn.Parameter(torch.empty((vocab_size, embed_size), dtype=dtype, device=device))
+        self.reset_parameters()
 
 
 class BERTEmbedding(nn.Module):
@@ -52,20 +57,24 @@ class BERTEmbedding(nn.Module):
 
         sum of all these features are output of BERTEmbedding
     """
-    def __init__(self, vocab_size, embed_size, dropout=0.1):
+    def __init__(self, vocab_size, embed_size, dropout=0.1,device=None, dtype=None):
         """
         :param vocab_size: total vocab size
         :param embed_size: embedding size of token embedding
         :param dropout: dropout rate
         """
         super().__init__()
-        self.token = TokenEmbedding(vocab_size, embed_size)
+        self.token = TokenEmbedding(vocab_size, embed_size, device=device, dtype=dtype)
         self.position = PositionalEmbedding(embed_size)
         self.segment = SegmentEmbedding(embed_size)
         self.dropout = nn.Dropout(p=dropout)
         self.embed_size = embed_size
 
-    def forward(self, sequence, segment_label):
+    def forward(self, sequence, segment_label=None):
+        if segment_label is None:
+            # if segment_label is not provided, create a tensor of zeros with same shape as sequence
+            segment_label = torch.zeros_like(sequence)
         x = self.token(sequence) + self.position(sequence) + self.segment(segment_label)
         return self.dropout(x)
+
 

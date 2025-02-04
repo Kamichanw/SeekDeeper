@@ -136,7 +136,7 @@ class BERTTrainer:
         print("EP%d_%s, avg_loss=" % (epoch, str_code), avg_loss / len(data_iter), "total_acc=",
               total_correct * 100.0 / total_element)
 
-    def save(self, epoch, file_path="output/bert_trained.model"):
+    def save(self, epoch, file_path):
         """
         Saving the current BERT model on file_path
 
@@ -144,7 +144,7 @@ class BERTTrainer:
         :param file_path: model output path which gonna be file_path+"ep%d" % epoch
         :return: final_output_path
         """
-        output_path = str(file_path) + ".ep%d" % epoch
+        output_path = str(file_path) + "_ep%d.pth" % epoch
         torch.save(self.bert.cpu(), output_path)
         self.bert.to(self.device)
         print("EP:%d Model Saved on:" % epoch, output_path)
