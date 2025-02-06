@@ -22,7 +22,7 @@ class BERTTrainer:
 
     def __init__(self, bert: BERT, vocab_size: int,
                  train_dataloader: DataLoader, test_dataloader: DataLoader = None,
-                 lr: float = 1e-4, betas=(0.9, 0.999), weight_decay: float = 0.01, warmup_steps=10000,
+                 lr: float = 1e-4, betas=(0.9, 0.999), weight_decay: float = 0.01, warmup_steps=10000, total_steps=1000000,
                  with_cuda: bool = True, cuda_devices=None, log_freq: int = 10):
         """
         :param bert: BERT model which you want to train
@@ -56,7 +56,7 @@ class BERTTrainer:
 
         # Setting the Adam optimizer with hyper-param
         self.optim = Adam(self.model.parameters(), lr=lr, betas=betas, weight_decay=weight_decay)
-        self.optim_schedule = ScheduledOptim(self.optim, self.bert.hidden, n_warmup_steps=warmup_steps)
+        self.optim_schedule = ScheduledOptim(self.optim, n_warmup_steps=warmup_steps, total_steps=total_steps)
 
         # Using Negative Log Likelihood Loss function for predicting the masked_token
         self.criterion = nn.NLLLoss(ignore_index=0)

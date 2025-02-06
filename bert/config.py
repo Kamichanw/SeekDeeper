@@ -11,15 +11,14 @@ os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(
 torch.manual_seed(3407)
 
 # basic setting
-vocab_size = 5000
+vocab_size = 30522
 encoding = "utf-8"
 min_freq = 1
 
 # training setting
-batch_size = 64
+batch_size = 32
 epochs = 11
 num_workers = 5
-
 
 # dataset and vocabulary paths
 base_dir = Path(__file__).parent.resolve()
@@ -27,10 +26,11 @@ checkpoint_dir = base_dir / "checkpoints"
 
 train_dataset = base_dir / "dataset"/"corpus.txt"
 test_dataset = None  # set to the path of the test dataset if available
-vocab_path = base_dir/"output/vocab"
 
 trained_path = checkpoint_dir / "bert_self_trained"
 pretrained_path = "bert-base-uncased"
+
+vocab_path = base_dir/"output/vocab"
 
 # model hyperparameters
 hidden_size = 768
@@ -48,26 +48,22 @@ corpus_lines = None  # total number of lines in corpus
 on_memory = True
 
 # optimizer parameters
-learning_rate = 1e-3
+learning_rate = 1e-4
 adam_weight_decay = 0.01
 adam_beta1 = 0.9
 adam_beta2 = 0.999
-
-
-weight_decay = 1e-2
-clip = 1
+warmup_steps = 10000
+total_steps = 1000000
 
 
 @dataclass
 class FinetuningConfig:
     n_epoch = 3
     batch_size = 32
-    accumulate_grad_batches = 1
-    lr = 6.25e-5
-    clf_loss_weight = 0.5
-    warmup_steps = 0.2 / 100
+    lr = 5e-5
+    weight_decay = 0.01
+    warmup_steps = 10000
 
 
-# inference
 
 

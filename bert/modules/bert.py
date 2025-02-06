@@ -63,16 +63,16 @@ class BERT(nn.Module):
         """
 
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        dtype = torch.float32  # 或根据需求选择数据类型
+        dtype = torch.float32
 
-        # 加载配置
+        # load the config from HuggingFace
         config = BertConfig.from_pretrained(model_name_or_path, **bert_kwargs)
 
         # Load the pre-trained model from HuggingFace using AutoModel
         bert_model = AutoModel.from_pretrained(model_name_or_path, config=config)
         bert_model = bert_model.to(device).to(dtype)
 
-        # 初始化自定义 BERT 模型
+        # init the self-defined BERT model with the config
         model = cls(
             vocab_size=config.vocab_size,
             hidden=config.hidden_size,
@@ -85,7 +85,8 @@ class BERT(nn.Module):
 
         # Copy the pre-trained weights to our model
         model.embedding.token.weight.data.copy_(bert_model.embeddings.word_embeddings.weight.data)
-        # position embedding is computed, do not need to copy (with sin/cos)
+        # position embedding
+        model.embedding.position.weight.data.copy_(bert_model.embeddings.position_embeddings.weight.data)
         # update with segment only 2 (0,1) to be consistent with the hf BERT
         model.embedding.segment.weight.data = bert_model.embeddings.token_type_embeddings.weight.data
 
@@ -127,6 +128,8 @@ class BERTTextClassifier(BERT):
         logits = self.forward(input_ids)
 
         probs = F.softmax(logits, dim=-1)
+
         predicted_class = torch.argmax(probs, dim=-1)
+        predicted_class = predicted_class.cpu().numpy()
 
         return predicted_class

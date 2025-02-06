@@ -3,33 +3,19 @@ from torch import nn
 import math
 
 
-class PositionalEmbedding(nn.Module):
+class PositionalEmbedding(nn.Embedding):
 
     def __init__(self, d_model, max_len=512):  # default max_len=512
-        super().__init__()
+        super().__init__(max_len, d_model)
 
         # Initialize position encoding matrix (shape: [max_len, d_model])
         pe = torch.zeros(max_len, d_model)
 
-        # Create a tensor of shape [max_len, 1] with position indices
-        position = torch.arange(0, max_len).float().unsqueeze(1)
-
-        # Compute the div_term (shape: [d_model//2]) for the sin and cos functions
-        div_term = torch.exp(
-            torch.arange(0, d_model, 2).float()
-            * (-math.log(10000.0) / d_model)
-        )
-
-        # Apply sin/cos to even/odd indices in the position encoding matrix
-        pe[:, 0::2] = torch.sin(position * div_term)
-        pe[:, 1::2] = torch.cos(position * div_term)
-
-        # Register pe as a buffer, not a parameter (no gradients needed)
-        self.register_buffer('pe', pe.unsqueeze(0))
+        self.weight = nn.Parameter(pe)
 
     def forward(self, x):
         #  [1, seq_len, d_model]
-        return self.pe[:, :x.size(1)]
+        return self.weight[:x.size(1)].unsqueeze(0)
 
 
 class SegmentEmbedding(nn.Embedding):
