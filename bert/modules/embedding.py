@@ -1,6 +1,5 @@
 import torch
 from torch import nn
-import math
 
 
 class PositionalEmbedding(nn.Embedding):
@@ -20,9 +19,6 @@ class PositionalEmbedding(nn.Embedding):
 
 class SegmentEmbedding(nn.Embedding):
     def __init__(self, embed_size=512):
-        # three different segments for sentence A-1, B-2 and special tokens 0
-        # super().__init__(3, embed_size, padding_idx=0)
-
         # consider only two segments A-0 and B-1 since pad 0 wouldn't be counted in due to mask mechanism
         super().__init__(2, embed_size, padding_idx=0)
 

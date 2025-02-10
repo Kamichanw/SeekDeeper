@@ -2,9 +2,11 @@ import torch
 import torch.nn as nn
 from transformers import AutoModel, BertConfig
 
-from .embedding import BERTEmbedding
-from .transformer_encoder import TransformerBlock
 from torch.nn import functional as F
+
+from .embedding import BERTEmbedding
+from .layers import TransformerBlock
+
 
 class BERT(nn.Module):
     """
@@ -83,12 +85,38 @@ class BERT(nn.Module):
             dtype=dtype
         )
 
-        # Copy the pre-trained weights to our model
+        # Copy the pre-trained weights to our model: Embedding
         model.embedding.token.weight.data.copy_(bert_model.embeddings.word_embeddings.weight.data)
         # position embedding
         model.embedding.position.weight.data.copy_(bert_model.embeddings.position_embeddings.weight.data)
         # update with segment only 2 (0,1) to be consistent with the hf BERT
         model.embedding.segment.weight.data = bert_model.embeddings.token_type_embeddings.weight.data
+
+        # Copy the pre-trained weights to our model: Transformer
+        for i, transformer_block in enumerate(model.transformer_blocks):
+            # Extract the i-th transformer block from the Hugging Face model
+            hf_transformer_layer = bert_model.encoder.layer[i]
+
+            # 1. Copy self-attention weights
+            transformer_block.self_attn.w_q.weight.data.copy_(hf_transformer_layer.attention.self.query.weight.data)
+            transformer_block.self_attn.w_k.weight.data.copy_(hf_transformer_layer.attention.self.key.weight.data)
+            transformer_block.self_attn.w_v.weight.data.copy_(hf_transformer_layer.attention.self.value.weight.data)
+            transformer_block.self_attn.w_concat.weight.data.copy_(
+                hf_transformer_layer.attention.output.dense.weight.data)
+
+            # 2. LayerNorm weights for attention output
+            transformer_block.ln_1.gamma.data.copy_(hf_transformer_layer.attention.output.LayerNorm.weight.data)
+            transformer_block.ln_1.beta.data.copy_(hf_transformer_layer.attention.output.LayerNorm.bias.data)
+
+            # 3. Feed-forward weights
+            transformer_block.ffn.linear1.weight.data.copy_(hf_transformer_layer.intermediate.dense.weight.data)
+            transformer_block.ffn.linear1.bias.data.copy_(hf_transformer_layer.intermediate.dense.bias.data)
+            transformer_block.ffn.linear2.weight.data.copy_(hf_transformer_layer.output.dense.weight.data)
+            transformer_block.ffn.linear2.bias.data.copy_(hf_transformer_layer.output.dense.bias.data)
+
+            # 4. LayerNorm weights for feed-forward output
+            transformer_block.ln_2.gamma.data.copy_(hf_transformer_layer.output.LayerNorm.weight.data)
+            transformer_block.ln_2.beta.data.copy_(hf_transformer_layer.output.LayerNorm.bias.data)
 
         if num_frozen_layers > 0:
             layers_to_freeze = range(num_frozen_layers)
@@ -133,3 +161,40 @@ class BERTTextClassifier(BERT):
         predicted_class = predicted_class.cpu().numpy()
 
         return predicted_class
+
+
+class ScheduledOptim():
+    """A wrapper class for optimizer to update step and lr """
+
+    def __init__(self, optimizer, n_warmup_steps, total_steps):
+        self._optimizer = optimizer
+        self.n_warmup_steps = n_warmup_steps
+        self.total_steps = total_steps
+        self.n_current_steps = 0
+        # self.init_lr = np.power(d_model, -0.5)
+        self.init_lr = self._optimizer.param_groups[0]['lr']
+
+    def step_and_update_lr(self):
+        "Step with the inner optimizer"
+        self._update_learning_rate()
+        self._optimizer.step()
+
+    def zero_grad(self):
+        "Zero out the gradients by the inner optimizer"
+        self._optimizer.zero_grad()
+
+    def _get_lr_scale(self):  # get lr scale based on current step and warmup steps
+
+        if self.n_current_steps < self.n_warmup_steps:
+            return float(self.n_current_steps) / float(self.n_warmup_steps)
+
+        return max(0.0, 1.0 - float(self.n_current_steps - self.n_warmup_steps) / float(self.total_steps - self.n_warmup_steps))
+
+    def _update_learning_rate(self):
+        ''' Learning rate scheduling per step '''
+
+        self.n_current_steps += 1  # update the number of steps
+        lr = self.init_lr * self._get_lr_scale()  #
+
+        for param_group in self._optimizer.param_groups:
+            param_group['lr'] = lr

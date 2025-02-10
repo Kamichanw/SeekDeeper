@@ -2,20 +2,21 @@ import os
 import pickle
 import random
 from collections import Counter
+from math import ceil
 
+import nltk
 import torch
 import tqdm
+from datasets import load_dataset, Features, Value
 from torch.utils.data import DataLoader
 from torch.utils.data import Dataset
-from transformers import BertTokenizer
 
 import config
-from datasets import load_dataset
 
 
 class BERTDataset(Dataset):
-    # BERTDataset processes the corpus
-    def __init__(self, corpus_path, vocab, seq_len, encoding="utf-8", corpus_lines=None, on_memory=True):
+    ''' This is for processing the corpus  '''
+    def __init__(self, corpus_path, vocab, seq_len, encoding="utf-8", corpus_lines=None, on_memory=True, loading_ratio = 0.00001):
         self.vocab = vocab
         self.seq_len = seq_len
 
@@ -23,30 +24,52 @@ class BERTDataset(Dataset):
         self.corpus_lines = corpus_lines
         self.corpus_path = corpus_path
         self.encoding = encoding
+        self.loading_ratio = loading_ratio  # loading ratio for corpus lines
 
         with open(corpus_path, "r", encoding=encoding) as f:
-            if self.corpus_lines is None and not on_memory:
-                for _ in tqdm.tqdm(f, desc="Loading Dataset", total=corpus_lines):
-                    self.corpus_lines += 1
 
-            # if on_memory:
-            #     self.lines = [line[:-1].split("\t")
-            #                   for line in tqdm.tqdm(f, desc="Loading Dataset", total=corpus_lines)]
-            #
-            #     self.corpus_lines = len(self.lines)
-            if on_memory:
+            num_lines = sum(1 for _ in f)
+            num_load_lines = int(num_lines * self.loading_ratio)
+            print(f"num_load_lines: {num_load_lines}")
+
+            #  Reset file pointer to the beginning
+            f.seek(0)
+
+            if self.corpus_lines is None and not on_memory:
+                self.corpus_lines = num_load_lines
+
+            if on_memory:  # to save memory, just load part of the corpus to train
                 self.lines = []
-                for line in tqdm.tqdm(f, desc="Loading Dataset", total=corpus_lines):
-                    line = line.strip().encode("utf-8").decode("unicode_escape")
-                    self.lines.append(line.split("\t"))
+                for i, line in tqdm.tqdm(enumerate(f), desc="Loading Dataset", total=num_load_lines):
+                    if i >= num_load_lines:  # Stop once the required number of lines is loaded
+                        break
+                    if line.strip(): # not empty
+                        self.lines.append(line[:-1].split("\t"))
+                print(f"length of self.lines: {len(self.lines)}")
                 self.corpus_lines = len(self.lines)
 
+        # if not on_memory:
+        #     self.file = open(corpus_path, "r", encoding=encoding)
+        #     self.random_file = open(corpus_path, "r", encoding=encoding)
+        #
+        #     for _ in range(random.randint(0, self.corpus_lines if self.corpus_lines < 1000 else 1000)):
+        #         self.random_file.__next__()
         if not on_memory:
+            # If not loading into memory, we still respect the loading_ratio and limit the lines read.
             self.file = open(corpus_path, "r", encoding=encoding)
             self.random_file = open(corpus_path, "r", encoding=encoding)
 
-            for _ in range(random.randint(self.corpus_lines if self.corpus_lines < 1000 else 1000)):
-                self.random_file.__next__()
+            # Read only the specified percentage of lines based on loading_ratio
+            # Instead of random skipping, we now limit the reading to num_load_lines
+            self.lines = []
+            for i, line in tqdm.tqdm(enumerate(self.file), desc="Loading Dataset", total=num_load_lines):
+                if i >= num_load_lines:  # Stop once the required number of lines is read
+                    break
+                if line.strip():  # Skip empty lines
+                    self.lines.append(line[:-1].split("\t"))
+            self.corpus_lines = len(self.lines)
+            print(f"Loaded {self.corpus_lines} lines into memory with loading_ratio: {loading_ratio}")
+
 
     def __len__(self):
         return self.corpus_lines
@@ -79,6 +102,7 @@ class BERTDataset(Dataset):
 
         return {key: torch.tensor(value) for key, value in output.items()}
 
+    # random masking
     def random_word(self, sentence):
         tokens = sentence.split()
         output_label = []
@@ -108,6 +132,7 @@ class BERTDataset(Dataset):
 
         return tokens, output_label
 
+    # random sentence pair selection (for NSP)
     def random_sent(self, index):
         t1, t2 = self.get_corpus_line(index)
 
@@ -117,33 +142,75 @@ class BERTDataset(Dataset):
         else:
             return t1, self.get_random_line(), 0
 
+    # def get_corpus_line(self, item):
+    #     print("get_corpus_line:item:", item)
+    #     if self.on_memory:
+    #         return self.lines[item][0], self.lines[item][1]
+    #     else:
+    #         line = self.file.__next__()
+    #         if line is None:
+    #             self.file.close()
+    #             self.file = open(self.corpus_path, "r", encoding=self.encoding)
+    #             line = self.file.__next__()
+    #
+    #         t1, t2 = line[:-1].split("\t")
+    #         print("get_corpus_line:t1, t2:", t1, t2)
+    #         return t1, t2
+
+    # get one line from corpus, which contains two sentences
     def get_corpus_line(self, item):
-        print("get_corpus_line:item:", item)
+        # print(f"get_corpus_line:item:{item}\n")
         if self.on_memory:
-            return self.lines[item][0], self.lines[item][1]
+            t1, t2 = self.lines[item]
+            if not t1 or not t2:  # Skip empty lines
+                return self.get_corpus_line(item + 1)  # Try next line, but may cause some duplications(quite little)
+            return t1, t2
         else:
             line = self.file.__next__()
-            if line is None:
-                self.file.close()
-                self.file = open(self.corpus_path, "r", encoding=self.encoding)
+            while not line.strip():  # skip empty lines
                 line = self.file.__next__()
 
-            t1, t2 = line[:-1].split("\t")
-            print("get_corpus_line:t1, t2:", t1, t2)
+            parts = line[:-1].split("\t")
+            if len(parts) < 2:  # if a line has less than 2 parts, skip it
+                return self.get_corpus_line(item + 1)  # get next line
+
+            t1, t2 = parts
             return t1, t2
 
+    # def get_random_line(self):
+    #     if self.on_memory:
+    #         return self.lines[random.randrange(len(self.lines))][1]
+    #
+    #     line = self.file.__next__()
+    #     if line is None:
+    #         self.file.close()
+    #         self.file = open(self.corpus_path, "r", encoding=self.encoding)
+    #         for _ in range(random.randint(self.corpus_lines if self.corpus_lines < 1000 else 1000)):
+    #             self.random_file.__next__()
+    #         line = self.random_file.__next__()
+    #     return line[:-1].split("\t")[1]
+
+    # choose one random line from corpus
     def get_random_line(self):
         if self.on_memory:
-            return self.lines[random.randrange(len(self.lines))][1]
+            while True:
+                # Randomly select a line
+                line = self.lines[random.randrange(len(self.lines))]
+                if len(line) > 1 and line[1].strip():  # Ensure the second part (t2) is non-empty
+                    return line[1]  # Return the second part of the line (t2)
+        else:
+            while True:
+                line = self.file.__next__()
+                if line is None:  # If line is None, reset file reading
+                    self.file.close()
+                    self.file = open(self.corpus_path, "r", encoding=self.encoding)
+                    for _ in range(random.randint(self.corpus_lines if self.corpus_lines < 1000 else 1000)):
+                        self.random_file.__next__()  # Skip random lines
+                    line = self.random_file.__next__()
 
-        line = self.file.__next__()
-        if line is None:
-            self.file.close()
-            self.file = open(self.corpus_path, "r", encoding=self.encoding)
-            for _ in range(random.randint(self.corpus_lines if self.corpus_lines < 1000 else 1000)):
-                self.random_file.__next__()
-            line = self.random_file.__next__()
-        return line[:-1].split("\t")[1]
+                parts = line[:-1].split("\t")  # Split the line into two parts
+                if len(parts) > 1 and parts[1].strip():  # Ensure the second part (t2) is non-empty
+                    return parts[1]  # Return the second part of the line (t2)
 
 
 class TorchVocab(object):
@@ -313,17 +380,107 @@ class WordVocab(Vocab):
 
 
 def build():
-    with open(config.train_dataset, "r", encoding=config.encoding) as f:
-        # convert escape characters in a string to actual characters with decode function, otherwise \t \n => \\t \\n
-        texts = [line.encode('utf-8').decode('unicode_escape') for line in f]
-        vocab = WordVocab(texts, max_size=config.vocab_size, min_freq=config.min_freq)
-    print("VOCAB SIZE:", len(vocab))
+    if not config.vocab_path.exists():
+        print("Building Vocab")
+        with open(config.train_dataset, "r", encoding=config.encoding) as f:
+            vocab = WordVocab(f, max_size=config.vocab_size, min_freq=config.min_freq)
+        print("VOCAB SIZE:", len(vocab))
 
-    # test
-    print("VOCAB CONTENT:", vocab.itos)
+        # test: print first 100 words of vocab
+        print("VOCAB CONTENT:", vocab.itos[:100])
 
-    # Save Vocab
-    vocab.save_vocab(config.vocab_path)
+        # Save Vocab
+        vocab.save_vocab(config.vocab_path)
+    else:
+        print("Vocab already exists! If you want to rebuild it, please delete the existing vocab file.")
+
+
+# load bert-pertrain dataset: bookcorpus and English wikipedia
+def split_into_sentences(text): # with nltk
+    return nltk.sent_tokenize(text)
+
+
+def generate_sentence_pairs(sentences):
+    pairs = []
+    for i in range(0, len(sentences) - 1, 2):
+        # pair ont sentence with its next sentence
+        if i + 1 < len(sentences):
+            # ensure sentences are not empty to avoid empty lines
+            sentence1 = sentences[i].strip()
+            sentence2 = sentences[i + 1].strip()
+            if sentence1 and sentence2:  # Skip empty sentences
+                pairs.append(f"{sentence1}\t{sentence2}")
+    return pairs
+
+
+def save_to_file(pairs, file_path):
+    with open(file_path, "w", encoding="utf-8") as f:
+        for pair in pairs:
+            # Ensure the pair is not empty or just whitespace
+            if pair.strip():
+                f.write(pair + "\n")
+
+
+def load_bookcorpus_wikipedia(book_loading_ratio=0.1, wiki_loading_ratio=1/41):
+
+    bookcorpus_path = config.base_dir / "dataset" / "bookcorpus_sentences.txt"
+    wikipedia_path = config.base_dir / "dataset" / "wikipedia_sentences.txt"
+
+    if not config.train_dataset.exists():
+        if not bookcorpus_path.exists():
+            # load BookCorpus, only load 10% data
+            num_book_files = ceil(10 * book_loading_ratio)
+            book_urls = [
+                f"https://hf-mirror.com/datasets/bookcorpus/bookcorpus/resolve/refs%2Fconvert%2Fparquet/plain_text/train/000{i}.parquet?download=true"
+                for i in range(num_book_files)
+            ]
+            print("Loading BookCorpus URLs:", book_urls)
+
+            bookcorpus_ds = load_dataset("parquet", data_files=book_urls, split="train")
+            bookcorpus_texts = [example["text"] for example in bookcorpus_ds]
+
+            # split into sentences
+            bookcorpus_sentences = []
+            for text in bookcorpus_texts:
+                bookcorpus_sentences.extend(split_into_sentences(text))
+
+            bookcorpus_pairs = generate_sentence_pairs(bookcorpus_sentences)
+
+            save_to_file(bookcorpus_pairs, bookcorpus_path)
+
+        if not wikipedia_path.exists():
+            # load English Wikipedia,only load 1/41 data
+            num_wiki_files = ceil(41 * wiki_loading_ratio)
+
+            # data structure of wikipedia
+            features = Features({
+                'id': Value('string'),
+                'url': Value('string'),
+                'title': Value('string'),
+                'text': Value('string')
+            })
+            wiki_urls = [
+                f"https://huggingface.co/datasets/wikimedia/wikipedia/resolve/refs%2Fconvert%2Fparquet/20231101.en/train/000{i}.parquet" # use version-20231101.en for Wikipedia(latest in wikimedia in huggingface)
+                for i in range(num_wiki_files)
+            ]
+            print("Loading Wikipedia URLs:", wiki_urls)
+            # extract train data
+            wikipedia_ds = load_dataset("parquet", data_files=wiki_urls, split="train", features=features)
+            wikipedia_texts = [example["text"] for example in wikipedia_ds]
+
+            wikipedia_sentences = []
+            for text in wikipedia_texts:
+                wikipedia_sentences.extend(split_into_sentences(text))
+
+            wikipedia_pairs = generate_sentence_pairs(wikipedia_sentences)
+
+            save_to_file(wikipedia_pairs, wikipedia_path)
+
+        with open(config.train_dataset, "w", encoding="utf-8") as outfile:
+            with open(bookcorpus_path, "r", encoding="utf-8") as infile1:
+                outfile.write(infile1.read())
+            with open(wikipedia_path, "r", encoding="utf-8") as infile2:
+                outfile.write(infile2.read())
 
 
 def _load_sst2(tokenizer, loading_ratio, num_proc, splits, **kwargs):
@@ -353,7 +510,6 @@ def _load_sst2(tokenizer, loading_ratio, num_proc, splits, **kwargs):
     # make sure subset size is not larger than the original size
     train_subset_size = min(subset_size, train_size)
     valid_subset_size = min(subset_size, valid_size)
-
 
     train_data = dataset["train"].select(range(train_subset_size))
     valid_data = dataset["validation"].select(range(valid_subset_size))
@@ -385,7 +541,7 @@ def _load_sst2(tokenizer, loading_ratio, num_proc, splits, **kwargs):
         dataloaders.append(
             DataLoader(
                 tokenized_split,
-                batch_size=16,
+                batch_size=config.FinetuningConfig.batch_size,
                 collate_fn=collate_fn,
                 shuffle=split_name == "train",
             )

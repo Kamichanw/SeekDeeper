@@ -11,13 +11,13 @@ os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(
 torch.manual_seed(3407)
 
 # basic setting
-vocab_size = 30522
+vocab_size = 30522-5  # 30522 is the size of the vocabulary of BERT-base-uncased, including the special tokens [CLS], [SEP], [PAD], [UNK], [MASK]
 encoding = "utf-8"
 min_freq = 1
 
 # training setting
 batch_size = 32
-epochs = 11
+epochs = 2
 num_workers = 5
 
 # dataset and vocabulary paths
@@ -30,7 +30,7 @@ test_dataset = None  # set to the path of the test dataset if available
 trained_path = checkpoint_dir / "bert_self_trained"
 pretrained_path = "bert-base-uncased"
 
-vocab_path = base_dir/"output/vocab"
+vocab_path = base_dir/"dataset/vocab"
 
 # model hyperparameters
 hidden_size = 768
@@ -60,7 +60,7 @@ total_steps = 1000000
 class FinetuningConfig:
     n_epoch = 3
     batch_size = 32
-    lr = 5e-5
+    lr = 2e-5
     weight_decay = 0.01
     warmup_steps = 10000
 
