@@ -191,8 +191,11 @@ class BertOnlyNSPHead(nn.Module):
 
 
 class BertForPreTraining(nn.Module):
-    _tied_weights_keys = ["predictions.decoder.bias", "cls.predictions.decoder.weight"]
-
+    """
+    Bert Model with two heads on top as done during the pretraining: a `masked language modeling` head and a `next
+    sentence prediction (classification)` head.
+    """
+    
     def __init__(
         self,
         vocab_size,
