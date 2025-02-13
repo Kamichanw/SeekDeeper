@@ -29,7 +29,7 @@ For numerical stability, we take the exponent and logarithm of the div term:
 \text{div-term} = 10000^{2i/d_{\text{model}}} = \exp\left(\frac{2i \cdot -\log(10000)}{d_{\text{model}}}\right)
 ```
 
-Positional encoding is the same for any sequence, so the shape of the positional encoding is `[seq_len, d_model]`. It is added to the input embedding with shape `[batch_size, seq_len, d_model]` through broadcasting to obtain the Encoder's input, denoted as $x_0$.
+Positional encoding is the same for any sequence, so the shape of the positional encoding is `[seq_len, hidden_size]`. It is added to the input embedding with shape `[batch_size, seq_len, hidden_size]` through broadcasting to obtain the Encoder's input, denoted as $x_0$.
 
 ## [Encoder](./modules/encoder.py)
 The Encoder consists of multiple identical layers. The output $x_i$ from the previous layer passes through the layer as follows (omitting dropout):
@@ -52,18 +52,18 @@ The attention calculation process is as follows:
 </div>
 In the Encoder's self-attention, K, Q, and V are obtained from the output of the previous layer through different linear layers. In the Decoder's cross-attention, K and V come from the output of the last layer of the Encoder, while Q is the output of the previous layer of the Decoder.
 
-To make the model focus on different subspace information at different positions, we use multi-head attention. Specifically, K, Q, and V with shape `[batch_size, seq_len, d_model]` are split into `[batch_size, seq_len, n_head, d_key]`, then the dimensions of `seq_len` and `n_head` are swapped for matrix multiplication in the attention mechanism. After calculating the attention, the results are concatenated and mapped to the same dimension as the input through a linear layer. The algorithm flow is as follows:
+To make the model focus on different subspace information at different positions, we use multi-head attention. Specifically, K, Q, and V with shape `[batch_size, seq_len, hidden_size]` are split into `[batch_size, seq_len, num_attention_heads, d_key]`, then the dimensions of `seq_len` and `num_attention_heads` are swapped for matrix multiplication in the attention mechanism. After calculating the attention, the results are concatenated and mapped to the same dimension as the input through a linear layer. The algorithm flow is as follows:
 ```python
 # projection
 K, Q, V = W_k(x), W_q(x), W_v(x)
 
 # split
-d_key = d_model // n_head
-K, Q, V = (K, Q, V).view(batch_size, seq_len, n_head, d_key).transpose(1, 2)
+d_key = hidden_size // num_attention_heads
+K, Q, V = (K, Q, V).view(batch_size, seq_len, num_attention_heads, d_key).transpose(1, 2)
 out = scaled_dot_product_attention(K, Q, V)
 
 #concatenate
-out = out.transpose(1, 2).view(batch_size, seq_len, d_model)
+out = out.transpose(1, 2).view(batch_size, seq_len, hidden_size)
 out = W_cat(out)
 ```
 

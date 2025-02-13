@@ -1,200 +1,266 @@
+import os
 import torch
 import torch.nn as nn
 from transformers import AutoModel, BertConfig
 
 from torch.nn import functional as F
 
-from .embedding import BERTEmbedding
-from .layers import TransformerBlock
+from .layers import *
 
 
-class BERT(nn.Module):
+def _init_weights(module):
+    """Initialize the weights"""
+    if isinstance(module, nn.Linear):
+        # Slightly different from the TF version which uses truncated_normal for initialization
+        # cf https://github.com/pytorch/pytorch/pull/5617
+        module.weight.data.normal_(mean=0.0, std=0.02)
+        if module.bias is not None:
+            module.bias.data.zero_()
+    elif isinstance(module, nn.Embedding):
+        module.weight.data.normal_(mean=0.0, std=0.02)
+        if module.padding_idx is not None:
+            module.weight.data[module.padding_idx].zero_()
+    elif isinstance(module, nn.LayerNorm):
+        module.bias.data.zero_()
+        module.weight.data.fill_(1.0)
+
+
+class BertModel(nn.Module):
     """
     BERT model : Bidirectional Encoder Representations from Transformers.
     """
 
-    def __init__(self, vocab_size, hidden=768, n_layers=12, attn_heads=12, dropout=0.1, max_len=512, device=None, dtype=None):
-        """
-        BERT Base Model
-        :param vocab_size: vocab_size of total words
-        :param hidden: BERT model hidden size
-        :param n_layers: numbers of Transformer blocks(layers)
-        :param attn_heads: number of attention heads
-        :param dropout: dropout rate
-        """
+    def __init__(
+        self,
+        vocab_size,
+        type_vocab_size=2,
+        hidden_size=768,
+        max_len=512,
+        num_hidden_layers=12,
+        num_attention_heads=12,
+        intermediate_size=3072,
+        dropout=0.1,
+        add_pooling_layer=True,
+        pad_token_idx=None,
+    ):
 
         super().__init__()
-        self.hidden = hidden
-        self.n_layers = n_layers
-        self.attn_heads = attn_heads
-        self.max_len = max_len
 
-        # paper noted they used 4*hidden_size for ff_network_hidden_size
-        self.feed_forward_hidden = hidden * 4
+        # embedding for Bert, sum of positional, segment, token embeddings, see paper Figure 2
+        self.embeddings = BertEmbeddings(
+            vocab_size=vocab_size,
+            type_vocab_size=type_vocab_size,
+            hidden_size=hidden_size,
+            max_len=max_len,
+            dropout=dropout,
+            pad_token_idx=pad_token_idx,
+        )
 
-        # embedding for BERT, sum of positional, segment, token embeddings
-        self.embedding = BERTEmbedding(vocab_size=vocab_size, embed_size=hidden,device=device, dtype=dtype)
+        self.encoder = BertEncoder(
+            num_hidden_layers=num_hidden_layers,
+            hidden_size=hidden_size,
+            intermediate_size=intermediate_size,
+            num_attention_heads=num_attention_heads,
+            dropout=dropout,
+        )
 
-        # multi-layers transformer blocks, deep network
-        self.transformer_blocks = nn.ModuleList(
-            [TransformerBlock(hidden, attn_heads, hidden * 4, dropout) for _ in range(n_layers)])
+        self.pooler = (
+            nn.ModuleDict(dict(dense=nn.Linear(hidden_size, hidden_size)))
+            if add_pooling_layer
+            else None
+        )
 
-    def forward(self, x, segment_info=None):
-        # attention masking for padded token
-        # torch.ByteTensor([batch_size, 1, seq_len, seq_len)
-        mask = (x > 0).unsqueeze(1).repeat(1, x.size(1), 1).unsqueeze(1)
+        self.apply(_init_weights)
 
-        # embedding the indexed sequence to sequence of vectors
-        x = self.embedding(x, segment_info)
+    def forward(self, x, token_type_ids=None, input_mask=None):
+        if input_mask is not None and input_mask.dim() == 2:
+            # [batch_size, seq_len] -> [batch_size, 1, 1, seq_len]
+            input_mask = input_mask.unsqueeze(1).unsqueeze(2)
 
-        # running over multiple transformer blocks
-        for transformer in self.transformer_blocks:
-            x = transformer.forward(x, mask)
+        x = self.embeddings(x, token_type_ids)
+        x = self.encoder(x, input_mask)
+
+        if self.pooler is not None:
+            pooled_output = torch.tanh(self.pooler.dense(x[:, 0]))
+            return x, pooled_output
 
         return x
 
     @classmethod
-    def from_pretrained(cls, model_name_or_path: str, num_frozen_layers=0,**bert_kwargs):
+    def from_pretrained(cls, model_name_or_path: str):
         """
-        Loads pretrained BERT model from transformers library.
+        Loads pretrained Bert model from transformers library.
 
         Args:
             model_name_or_path (str): Path to a directory or model name from HuggingFace hub.
-            num_frozen_layers (int): The number of layers whose parameters should be frozen.
-            bert_kwargs: Additional keyword arguments for BERT initialization.
         """
 
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        dtype = torch.float32
+        import transformers
 
-        # load the config from HuggingFace
-        config = BertConfig.from_pretrained(model_name_or_path, **bert_kwargs)
+        try:
+            HFModelClass = getattr(transformers, cls.__name__)
+        except AttributeError:
+            raise ValueError(f"Transformers library doesn't have a {cls_name} class")
 
-        # Load the pre-trained model from HuggingFace using AutoModel
-        bert_model = AutoModel.from_pretrained(model_name_or_path, config=config)
-        bert_model = bert_model.to(device).to(dtype)
+        model_hf = HFModelClass.from_pretrained(model_name_or_path)
+        sd_hf = model_hf.state_dict()
+        config_hf: transformers.BertConfig = model_hf.config
 
-        # init the self-defined BERT model with the config
         model = cls(
-            vocab_size=config.vocab_size,
-            hidden=config.hidden_size,
-            n_layers=config.num_hidden_layers,
-            attn_heads=config.num_attention_heads,
-            dropout=config.hidden_dropout_prob,
-            device=device,
-            dtype=dtype
+            vocab_size=config_hf.vocab_size,
+            type_vocab_size=config_hf.type_vocab_size,
+            hidden_size=config_hf.hidden_size,
+            max_len=config_hf.max_position_embeddings,
+            num_hidden_layers=config_hf.num_hidden_layers,
+            num_attention_heads=config_hf.num_attention_heads,
+            intermediate_size=config_hf.intermediate_size,
+            dropout=config_hf.hidden_dropout_prob,
+            pad_token_idx=config_hf.pad_token_id,
         )
+        sd = model.state_dict()
 
-        # Copy the pre-trained weights to our model: Embedding
-        model.embedding.token.weight.data.copy_(bert_model.embeddings.word_embeddings.weight.data)
-        # position embedding
-        model.embedding.position.weight.data.copy_(bert_model.embeddings.position_embeddings.weight.data)
-        # update with segment only 2 (0,1) to be consistent with the hf BERT
-        model.embedding.segment.weight.data = bert_model.embeddings.token_type_embeddings.weight.data
+        # Ensure all the parameters align between HuggingFace model and our model
+        sd_keys = set(sd.keys())
+        sd_keys_hf = set(sd_hf.keys())
 
-        # Copy the pre-trained weights to our model: Transformer
-        for i, transformer_block in enumerate(model.transformer_blocks):
-            # Extract the i-th transformer block from the Hugging Face model
-            hf_transformer_layer = bert_model.encoder.layer[i]
+        if sd_keys != sd_keys_hf:
+            raise ValueError(
+                "Some keys are missing in one of the models. "
+                f"HF: {sd_keys - sd_keys_hf}, Ours: {sd_keys_hf - sd_keys}"
+            )
 
-            # 1. Copy self-attention weights
-            transformer_block.self_attn.w_q.weight.data.copy_(hf_transformer_layer.attention.self.query.weight.data)
-            transformer_block.self_attn.w_k.weight.data.copy_(hf_transformer_layer.attention.self.key.weight.data)
-            transformer_block.self_attn.w_v.weight.data.copy_(hf_transformer_layer.attention.self.value.weight.data)
-            transformer_block.self_attn.w_concat.weight.data.copy_(
-                hf_transformer_layer.attention.output.dense.weight.data)
-
-            # 2. LayerNorm weights for attention output
-            transformer_block.ln_1.gamma.data.copy_(hf_transformer_layer.attention.output.LayerNorm.weight.data)
-            transformer_block.ln_1.beta.data.copy_(hf_transformer_layer.attention.output.LayerNorm.bias.data)
-
-            # 3. Feed-forward weights
-            transformer_block.ffn.linear1.weight.data.copy_(hf_transformer_layer.intermediate.dense.weight.data)
-            transformer_block.ffn.linear1.bias.data.copy_(hf_transformer_layer.intermediate.dense.bias.data)
-            transformer_block.ffn.linear2.weight.data.copy_(hf_transformer_layer.output.dense.weight.data)
-            transformer_block.ffn.linear2.bias.data.copy_(hf_transformer_layer.output.dense.bias.data)
-
-            # 4. LayerNorm weights for feed-forward output
-            transformer_block.ln_2.gamma.data.copy_(hf_transformer_layer.output.LayerNorm.weight.data)
-            transformer_block.ln_2.beta.data.copy_(hf_transformer_layer.output.LayerNorm.bias.data)
-
-        if num_frozen_layers > 0:
-            layers_to_freeze = range(num_frozen_layers)
-            for name, param in model.named_parameters():
-                param.requires_grad = not any(f"encoder.layer.{i}." in name for i in layers_to_freeze)
-
-        num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-        print(f"Number of trainable parameters: {num_params / 1e6:.2f}M")
+        for k in sd_keys:
+            assert (
+                sd_hf[k].shape == sd[k].shape
+            ), f"Shape mismatch for key {k}: {sd_hf[k].shape} vs {sd[k].shape}"
+            with torch.no_grad():
+                sd[k].copy_(sd_hf[k])
 
         return model
 
 
-class BERTTextClassifier(BERT):
-    def __init__(self, vocab_size, hidden=768, n_layers=12, attn_heads=12, dropout=0.1, max_len=512, num_labels=2,device=None, dtype=None):
-        # Initialize the parent BERT class with the given parameters
-        super().__init__(vocab_size, hidden, n_layers, attn_heads, dropout, max_len, device, dtype)
-        # classifier for text classification
-        self.classifier = nn.Linear(hidden, num_labels)
+class BertLMPredictionHead(nn.Module):
+    def __init__(self, vocab_size, hidden_size):
+        super().__init__()
+        self.transform = nn.ModuleDict(
+            dict(
+                dense=nn.Linear(hidden_size, hidden_size),
+                LayerNorm=nn.LayerNorm(hidden_size),
+            )
+        )
 
-    def forward(self, input_ids, segment_info=None, attention_mask=None, labels=None):
-        x = super().forward(input_ids, segment_info)  # get the output from BERT
-        cls_output = x[:, 0, :]  # get the CLS token output
-        logits = self.classifier(cls_output)
+        # The output weights are the same as the input embeddings, but there is
+        # an output-only bias for each token.
+        self.decoder = nn.Linear(hidden_size, vocab_size, bias=False)
+
+        self.bias = nn.Parameter(torch.zeros(vocab_size))
+
+        # Need a link between the two variables so that the bias is correctly resized with `resize_token_embeddings`
+        self.decoder.bias = self.bias
+
+    def forward(self, hidden_states):
+        # The following operations are fused into one class in HF BertOnlyMLMHead
+        hidden_states = self.transform.dense(hidden_states)
+        hidden_states = F.gelu(hidden_states)
+        hidden_states = self.transform.LayerNorm(hidden_states)
+
+        hidden_states = self.decoder(hidden_states)
+        return hidden_states
+
+
+class BertOnlyMLMHead(nn.Module):
+    def __init__(self, vocab_size, hidden_size):
+        super().__init__()
+        self.predictions = BertLMPredictionHead(
+            vocab_size=vocab_size, hidden_size=hidden_size
+        )
+
+    def forward(self, sequence_output: torch.Tensor) -> torch.Tensor:
+        prediction_scores = self.predictions(sequence_output)
+        return prediction_scores
+
+
+class BertOnlyNSPHead(nn.Module):
+    def __init__(self, hidden_size):
+        super().__init__()
+        self.seq_relationship = nn.Linear(hidden_size, 2)
+
+    def forward(self, pooled_output):
+        seq_relationship_score = self.seq_relationship(pooled_output)
+        return seq_relationship_score
+
+
+class BertForPreTraining(nn.Module):
+    _tied_weights_keys = ["predictions.decoder.bias", "cls.predictions.decoder.weight"]
+
+    def __init__(
+        self,
+        vocab_size,
+        type_vocab_size=2,
+        hidden_size=768,
+        max_len=512,
+        num_hidden_layers=12,
+        num_attention_heads=12,
+        intermediate_size=3072,
+        dropout=0.1,
+        pad_token_idx=None,
+    ):
+        super().__init__()
+
+        self.vocab_size = vocab_size
+
+        self.bert = BertModel(
+            vocab_size=vocab_size,
+            type_vocab_size=type_vocab_size,
+            hidden_size=hidden_size,
+            max_len=max_len,
+            num_hidden_layers=num_hidden_layers,
+            num_attention_heads=num_attention_heads,
+            intermediate_size=intermediate_size,
+            dropout=dropout,
+            pad_token_idx=pad_token_idx,
+        )
+
+        self.cls = nn.ModuleDict(
+            dict(
+                predictions=BertLMPredictionHead(
+                    vocab_size=vocab_size, hidden_size=hidden_size
+                ),
+                seq_relationship=nn.Linear(hidden_size, 2),
+            )
+        )
+        self.cls.apply(_init_weights)
+
+        # weight tying
+        self.cls.predictions.decoder.weight = (
+            self.bert.embeddings.word_embeddings.weight
+        )
+
+    def forward(
+        self,
+        input_ids,
+        token_type_ids=None,
+        attention_mask=None,
+        labels=None,
+        next_sentence_label=None,
+    ):
+        sequence_output, pooled_output = self.bert(
+            input_ids, token_type_ids, attention_mask
+        )
+        prediction_scores, seq_relationship_score = self.cls(
+            sequence_output, pooled_output
+        )
 
         # if labels are provided, add the loss and return it
         if labels is not None:
             loss_fct = nn.CrossEntropyLoss()
-            loss = loss_fct(logits, labels)
-            return loss, logits  # return the loss and logits for evaluation
-        else:
-            return logits  # return the logits for inference
-
-    @torch.no_grad()
-    def text_clf(self, input_ids):
-        self.eval()
-
-        logits = self.forward(input_ids)
-
-        probs = F.softmax(logits, dim=-1)
-
-        predicted_class = torch.argmax(probs, dim=-1)
-        predicted_class = predicted_class.cpu().numpy()
-
-        return predicted_class
-
-
-class ScheduledOptim():
-    """A wrapper class for optimizer to update step and lr """
-
-    def __init__(self, optimizer, n_warmup_steps, total_steps):
-        self._optimizer = optimizer
-        self.n_warmup_steps = n_warmup_steps
-        self.total_steps = total_steps
-        self.n_current_steps = 0
-        # self.init_lr = np.power(d_model, -0.5)
-        self.init_lr = self._optimizer.param_groups[0]['lr']
-
-    def step_and_update_lr(self):
-        "Step with the inner optimizer"
-        self._update_learning_rate()
-        self._optimizer.step()
-
-    def zero_grad(self):
-        "Zero out the gradients by the inner optimizer"
-        self._optimizer.zero_grad()
-
-    def _get_lr_scale(self):  # get lr scale based on current step and warmup steps
-
-        if self.n_current_steps < self.n_warmup_steps:
-            return float(self.n_current_steps) / float(self.n_warmup_steps)
-
-        return max(0.0, 1.0 - float(self.n_current_steps - self.n_warmup_steps) / float(self.total_steps - self.n_warmup_steps))
-
-    def _update_learning_rate(self):
-        ''' Learning rate scheduling per step '''
-
-        self.n_current_steps += 1  # update the number of steps
-        lr = self.init_lr * self._get_lr_scale()  #
-
-        for param_group in self._optimizer.param_groups:
-            param_group['lr'] = lr
+            masked_lm_loss = loss_fct(
+                prediction_scores.view(-1, self.vocab_size), labels.view(-1)
+            )
+            next_sentence_loss = loss_fct(
+                seq_relationship_score.view(-1, 2), next_sentence_label.view(-1)
+            )
+            total_loss = masked_lm_loss + next_sentence_loss
+        
+        output = (prediction_scores, seq_relationship_score)
+        return ((total_loss,) + output) if total_loss is not None else output

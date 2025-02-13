@@ -73,7 +73,7 @@ def _load_cifar10(num_proc, splits, **kwargs):
 
 def load_data(
     name: str,
-    num_proc: int = 0,
+    num_proc: int = 1,
     splits: Sequence[str] = None,
     **kwargs,
 ):

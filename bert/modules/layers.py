@@ -1,160 +1,198 @@
+from typing import Optional
 import torch
 from torch import nn
 import math
 import torch.nn.functional as F
 
-
-class LayerNorm(nn.Module):
-    def __init__(self, normalized_shape, eps=1e-5, elementwise_affine=True):
-        super(LayerNorm, self).__init__()
-        self.normalized_shape = normalized_shape
-        self.eps = eps
-        self.elementwise_affine = elementwise_affine
-        if self.elementwise_affine:
-            # Learnable parameters
-            self.gamma = nn.Parameter(torch.ones(normalized_shape))
-            self.beta = nn.Parameter(torch.zeros(normalized_shape))
-        else:
-            self.gamma = None
-            self.beta = None
-
-    def forward(self, x):
-        # x: [batch_size, ..., normalized_shape]
-        mean = x.mean(dim=-1, keepdim=True)
-        std = x.std(dim=-1, keepdim=True)
-        x_normalized = (x - mean) / (std + self.eps)
-
-        if self.elementwise_affine:
-            x_normalized = self.gamma * x_normalized + self.beta
-
-        return x_normalized
+from transformers import BertModel
 
 
-class ScaledDotProductAttention(nn.Module):
-    def __init__(self):
-        super(ScaledDotProductAttention, self).__init__()
-        self.flash = self.flash = hasattr(F, "scaled_dot_product_attention")
+class BertEmbeddings(nn.Module):
+    """Construct the embeddings from word, position and token_type embeddings.
+    See paper Figure 2 for details.
+    """
 
-    def forward(self, q, k, v, mask=None):
+    def __init__(
+        self,
+        vocab_size,
+        type_vocab_size,
+        hidden_size,
+        max_len,
+        dropout=0.1,
+        pad_token_idx=None,
+    ):
+        super().__init__()
+        self.word_embeddings = nn.Embedding(
+            vocab_size, hidden_size, padding_idx=pad_token_idx
+        )
+        self.position_embeddings = nn.Embedding(max_len, hidden_size)
+
+        # token type embeddings is used for Next Sentence Prediction (NSP) task
+        # type_vocab_size typically equals 2
+        self.token_type_embeddings = nn.Embedding(type_vocab_size, hidden_size)
+
+        # self.LayerNorm is not snake-cased to stick with TensorFlow model variable name and be able to load
+        # any TensorFlow checkpoint file
+        self.LayerNorm = nn.LayerNorm(hidden_size)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(
+        self,
+        input_ids: torch.LongTensor,
+        token_type_ids: Optional[torch.LongTensor] = None,
+    ) -> torch.Tensor:
+        batch_size, seq_len, hidden_size = input_ids.size()
+
+        # When its auto-generated, token_type_ids can be None
+        if token_type_ids is None:
+            token_type_ids = torch.zeros_like(input_ids, dtype=torch.long)
+
+        embeddings = (
+            self.word_embeddings(input_ids)
+            + self.token_type_embeddings(token_type_ids)
+            + self.position_embeddings(
+                torch.arange(seq_len, dtype=torch.long, device=input_ids.device).expand(
+                    (1, -1)
+                )
+            )
+        )
+        embeddings = self.LayerNorm(embeddings)
+        embeddings = self.dropout(embeddings)
+        return embeddings
+
+
+class SelfAttention(nn.Module):
+    """
+    Standard self-attention operation, without any modifications
+    """
+
+    def __init__(self, hidden_size, num_attention_heads, dropout):
+        super().__init__()
+        self.num_attention_heads = num_attention_heads
+        self.attention_head_size = hidden_size // num_attention_heads
+        self.all_head_size = self.num_attention_heads * self.attention_head_size
+
+        self.query = nn.Linear(hidden_size, self.all_head_size)
+        self.key = nn.Linear(hidden_size, self.all_head_size)
+        self.value = nn.Linear(hidden_size, self.all_head_size)
+        self.dropout = nn.Dropout(dropout)
+
+        # flash attention make GPU go brrrrr but support is only in PyTorch >= 2.0
+        self.flash = hasattr(torch.nn.functional, "scaled_dot_product_attention")
+
+    def forward(self, x, mask=None):
+        bsz, nh, nd = (
+            x.size(0),
+            self.num_attention_heads,
+            self.attention_head_size,
+        )
+
+        # calculate query, key, values for all heads in batch and move head forward to be the batch dim
+        q = self.query(x).view(bsz, -1, nh, nd).transpose(1, 2)
+        k = self.key(x).view(bsz, -1, nh, nd).transpose(1, 2)
+        v = self.value(x).view(bsz, -1, nh, nd).transpose(1, 2)
+
         if self.flash:
-            out = F.scaled_dot_product_attention(q, k, v, mask)
+            att = F.scaled_dot_product_attention(
+                q,
+                k,
+                v,
+                dropout_p=self.dropout.p if self.training else 0.0,
+                is_causal=False,
+                attn_mask=mask,
+                scale=None,  # scaled_dot_product_attention will scale automatically even scale is None
+            )
         else:
-            # calculate attention manually
-            batch_size, n_head, seq_len, d_key = k.size()
-
-            # 1. Compute the dot product between query and key^T
-            k_t = k.transpose(-2, -1)
-            scores = q @ k_t / math.sqrt(d_key)
-
-            # 2. Apply mask (optional)
+            att = torch.matmul(q, k.transpose(-1, -2)) / math.sqrt(nd)
             if mask is not None:
-                scores = scores.masked_fill(mask.logical_not(), float("-inf"))
+                att = att.masked_fill(mask == 0, float("-inf"))
+            att = F.softmax(att, dim=-1)
+            att = self.dropout(att)
+            y = torch.matmul(att, v)  # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
 
-            # 3. Apply softmax to get attention weights
-            attn = F.softmax(scores, dim=-1)
+        # re-assemble all head outputs side by side
+        y = att.transpose(1, 2).contiguous().view(bsz, -1, self.all_head_size)
 
-            # 4. Compute the weighted sum of values
-            out = attn @ v
-
-        return out
-
-
-class MultiheadAttention(nn.Module):
-
-    def __init__(self, d_model, n_head, dropout):
-        super(MultiheadAttention, self).__init__()
-        self.n_head = n_head
-        self.attention = ScaledDotProductAttention()
-        self.w_q = nn.Linear(d_model, d_model)
-        self.w_k = nn.Linear(d_model, d_model)
-        self.w_v = nn.Linear(d_model, d_model)
-        self.w_concat = nn.Linear(d_model, d_model)
-        self.dropout = nn.Dropout(p=dropout)
-
-    def forward(self, q, k, v, mask=None):
-        # 1. Linear projections, [batch_size, length, d_model]
-        q, k, v = self.w_q(q), self.w_k(k), self.w_v(v)
-
-        # 2. Split tensor by number of heads, [batch_size, length, n_head, d_key]
-        q, k, v = self.split(q), self.split(k), self.split(v)
-
-        # 3. Apply attention
-        out = self.attention(q, k, v, mask=mask)
-
-        # 4. concat and pass to linear layer, [batch_size, length, d_model]
-        out = self.concat(out)
-        out = self.w_concat(out)
-
-        return self.dropout(out)
-
-    def split(self, tensor):
-        batch_size, length, d_model = tensor.size()
-
-        d_key = d_model // self.n_head
-        return tensor.view(batch_size, length, self.n_head, d_key).transpose(1, 2)
-
-    def concat(self, tensor):
-        batch_size, head, length, d_key = tensor.size()
-        d_model = head * d_key
-
-        tensor = tensor.transpose(1, 2).contiguous().view(batch_size, length, d_model)
-        return tensor
+        # output projection will be performed later
+        return y
 
 
-class GELU(nn.Module):
-    """
-    Appendix A.2 notice that BERT used the GELU instead of RELU
-    """
-    def forward(self, x):
-        return 0.5 * x * (1 + torch.tanh(math.sqrt(2 / math.pi) * (x + 0.044715 * torch.pow(x, 3))))
-
-
-class PositionwiseFeedForward(nn.Module):
-    """
-    FFN layer
-    """
-    def __init__(self, d_model, hidden, dropout=0.1):
-        super(PositionwiseFeedForward, self).__init__()
-        self.linear1 = nn.Linear(d_model, hidden)
-        self.linear2 = nn.Linear(hidden, d_model)
-        self.dropout = nn.Dropout(p=dropout)
-        self.activation = GELU()
-
-    def forward(self, x):
-        x = self.linear1(x)
-        x = self.activation(x)
-        x = self.dropout(x)
-        x = self.linear2(x)
-        return x
-
-
-class TransformerBlock(nn.Module):  # only encoder block
-
-    def __init__(self, d_model, n_head, ffn_hidden, dropout):
-        super(TransformerBlock, self).__init__()
-        self.self_attn = MultiheadAttention(
-            d_model=d_model, n_head=n_head, dropout=dropout
+class BertLayer(nn.Module):
+    def __init__(
+        self,
+        hidden_size,
+        intermediate_size,
+        num_attention_heads,
+        dropout,
+    ):
+        super().__init__()
+        # I use a lot of `ModuleDict` here to simplify the code structure
+        # while ensuring that the pre-trained weights of huggingface transformers can be loaded directly
+        self.attention = nn.ModuleDict(
+            dict(
+                self=SelfAttention(
+                    hidden_size=hidden_size,
+                    num_attention_heads=num_attention_heads,
+                    dropout=dropout,
+                ),
+                output=nn.ModuleDict(
+                    dict(
+                        dense=nn.Linear(hidden_size, hidden_size),
+                        LayerNorm=nn.LayerNorm(hidden_size),
+                    )
+                ),
+            )
         )
-        self.ln_1 = LayerNorm(normalized_shape=d_model)
-
-        self.ffn = PositionwiseFeedForward(
-            d_model=d_model, hidden=ffn_hidden, dropout=dropout
+        self.output = nn.ModuleDict(
+            dict(
+                dense=nn.Linear(intermediate_size, hidden_size),
+                LayerNorm=nn.LayerNorm(hidden_size),
+            )
         )
-        self.ln_2 = LayerNorm(normalized_shape=d_model)
+        self.intermediate = nn.ModuleDict(
+            dict(dense=nn.Linear(hidden_size, intermediate_size))
+        )
+        self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x, src_mask):
-        # 1. Self-Attention sublayer
-        residual = x
-        x = self.self_attn(x, x, x, src_mask)
+    def forward(self, x, mask=None):
+        # in HF BertLayer implementation, the following operations are fused into one class
+        attention = self.attention.self(x, mask)
+        attention = self.dropout(self.attention.output.dense(attention))
+        x = self.attention.output.LayerNorm(x + attention)
 
-        # 2. Add and norm
-        x = self.ln_1(x + residual)
+        # feed forward layer (BertIntermediate + BertOutput)
+        intermediate_output = F.gelu(self.intermediate.dense(x))
+        # second residual connection is done here
+        layer_output = self.output.LayerNorm(
+            x + self.dropout(self.output.dense(intermediate_output))
+        )
 
-        # 3. Feed-Forward sublayer
-        residual = x
-        x = self.ffn(x)
+        return layer_output
 
-        # 4. Add and norm
-        x = self.ln_2(x + residual)
 
+class BertEncoder(nn.Module):
+    def __init__(
+        self,
+        num_hidden_layers,
+        hidden_size,
+        intermediate_size,
+        num_attention_heads,
+        dropout,
+    ):
+        super().__init__()
+        self.layer = nn.ModuleList(
+            [
+                BertLayer(
+                    hidden_size=hidden_size,
+                    intermediate_size=intermediate_size,
+                    num_attention_heads=num_attention_heads,
+                    dropout=dropout,
+                )
+                for _ in range(num_hidden_layers)
+            ]
+        )
+
+    def forward(self, x, mask=None):
+        for layer in self.layer:
+            x = layer(x, mask)
         return x

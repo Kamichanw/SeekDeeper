@@ -11,29 +11,37 @@ from .layers import Block
 class GPT2(nn.Module):
     """GPT Language Model"""
 
-    def __init__(self, vocab_size, max_len, d_model, n_head, n_layer, dropout):
+    def __init__(
+        self,
+        vocab_size,
+        max_len,
+        hidden_size,
+        num_attention_heads,
+        num_hidden_layers,
+        dropout,
+    ):
         super().__init__()
         self.max_len = max_len
         self.transformer = nn.ModuleDict(
             dict(
-                wte=nn.Embedding(vocab_size, d_model),
-                wpe=nn.Embedding(max_len, d_model),
+                wte=nn.Embedding(vocab_size, hidden_size),
+                wpe=nn.Embedding(max_len, hidden_size),
                 drop=nn.Dropout(dropout),
                 h=nn.ModuleList(
                     [
                         Block(
-                            d_model=d_model,
-                            n_head=n_head,
+                            hidden_size=hidden_size,
+                            num_attention_heads=num_attention_heads,
                             max_len=max_len,
                             dropout=dropout,
                         )
-                        for _ in range(n_layer)
+                        for _ in range(num_hidden_layers)
                     ]
                 ),
-                ln_f=nn.LayerNorm(d_model),
+                ln_f=nn.LayerNorm(hidden_size),
             )
         )
-        self.lm_head = nn.Linear(d_model, vocab_size, bias=False)
+        self.lm_head = nn.Linear(hidden_size, vocab_size, bias=False)
 
         self.transformer.wte.weight = (
             self.lm_head.weight
@@ -44,7 +52,9 @@ class GPT2(nn.Module):
         # apply special scaled init to the residual projections, per GPT-2 paper
         for pn, p in self.named_parameters():
             if pn.endswith("c_proj.weight"):
-                torch.nn.init.normal_(p, mean=0.0, std=0.02 / math.sqrt(2 * n_layer))
+                torch.nn.init.normal_(
+                    p, mean=0.0, std=0.02 / math.sqrt(2 * num_hidden_layers)
+                )
 
         # report number of parameters
         print("number of parameters: %.2fM" % (self.get_num_params() / 1e6,))
@@ -74,50 +84,26 @@ class GPT2(nn.Module):
 
     @classmethod
     def from_pretrained(cls, model_name_or_path: str):
-        support_models = {"gpt2", "gpt2-medium", "gpt2-large", "gpt2-xl"}
-
-        import os
-
-        model_name = model_name_or_path.removeprefix("openai-community/")
-        if os.path.isdir(model_name_or_path):
-            basename = os.path.basename(model_name_or_path)
-            for model in sorted(support_models, key=len, reverse=True):
-                if model in basename:
-                    model_name = model
-                    break
-            else:
-                raise ValueError(
-                    f"To specify the custom GPT model structure, the dir name should be one of {support_models} "
-                )
-        elif model_name not in support_models:
-            raise ValueError(f"Unsupport model {model_name} or dir not found")
-
         from transformers import GPT2LMHeadModel
 
-        print("loading weights from pretrained gpt: %s" % model_name)
+        # init a huggingface/transformers model
+        model_hf = GPT2LMHeadModel.from_pretrained(model_name_or_path)
+        sd_hf = model_hf.state_dict()
 
-        # n_layer, n_head and d_model are determined from model_type
-        config_args = {
-            "gpt2": dict(n_layer=12, n_head=12, d_model=768),  # 124M params
-            "gpt2-medium": dict(n_layer=24, n_head=16, d_model=1024),  # 350M params
-            "gpt2-large": dict(n_layer=36, n_head=20, d_model=1280),  # 774M params
-            "gpt2-xl": dict(n_layer=48, n_head=25, d_model=1600),  # 1558M params
-        }[model_name]
-        print("forcing vocab_size=50257, max_len=1024")
-        config_args["vocab_size"] = 50257  # always 50257 for GPT model checkpoints
-        config_args["max_len"] = 1024  # always 1024 for GPT model checkpoints
-        config_args["dropout"] = 0.1
-
-        model = GPT2(**config_args)
+        config_hf = model_hf.config
+        model = GPT2(
+            vocab_size=config_hf.vocab_size,
+            max_len=config_hf.n_positions,
+            hidden_size=config_hf.n_embd,
+            num_attention_heads=config_hf.n_head,
+            num_hidden_layers=config_hf.n_layer,
+            dropout=config_hf.resid_pdrop,
+        )
         sd = model.state_dict()
         sd_keys = sd.keys()
         sd_keys = [
             k for k in sd_keys if not k.endswith(".attn.bias")
         ]  # discard this mask / buffer, not a param
-
-        # init a huggingface/transformers model
-        model_hf = GPT2LMHeadModel.from_pretrained(model_name_or_path)
-        sd_hf = model_hf.state_dict()
 
         # copy while ensuring all of the parameters are aligned and match in names and shapes
         sd_keys_hf = sd_hf.keys()
@@ -199,8 +185,10 @@ class GPT2(nn.Module):
         # forward the GPT model itself
         tok_emb = self.transformer.wte(
             input
-        )  # token embeddings of shape (b, t, d_model)
-        pos_emb = self.transformer.wpe(pos)  # position embeddings of shape (t, d_model)
+        )  # token embeddings of shape (b, t, hidden_size)
+        pos_emb = self.transformer.wpe(
+            pos
+        )  # position embeddings of shape (t, hidden_size)
         x = self.transformer.drop(tok_emb + pos_emb)
         for block in self.transformer.h:
             x = block(x, input_mask)

@@ -6,18 +6,18 @@ from torch.nn import functional as F
 
 
 class Attention(nn.Module):
-    def __init__(self, d_model, n_head, max_len, dropout):
+    def __init__(self, hidden_size, num_attention_heads, max_len, dropout):
         super().__init__()
-        assert d_model % n_head == 0
+        assert hidden_size % num_attention_heads == 0
         # key, query, value projections for all heads, but in a batch
-        self.c_attn = nn.Linear(d_model, 3 * d_model)
+        self.c_attn = nn.Linear(hidden_size, 3 * hidden_size)
         # output projection
-        self.c_proj = nn.Linear(d_model, d_model)
+        self.c_proj = nn.Linear(hidden_size, hidden_size)
         # regularization
         self.attn_dropout = nn.Dropout(dropout)
         self.resid_dropout = nn.Dropout(dropout)
-        self.n_head = n_head
-        self.d_model = d_model
+        self.num_attention_heads = num_attention_heads
+        self.hidden_size = hidden_size
         self.dropout = dropout
         # flash attention make GPU go brrrrr but support is only in PyTorch >= 2.0
         self.flash = hasattr(torch.nn.functional, "scaled_dot_product_attention")
@@ -32,17 +32,23 @@ class Attention(nn.Module):
     def forward(self, x, mask=None):
         B, T, C = (
             x.size()
-        )  # batch size, sequence length, embedding dimensionality (d_model)
+        )  # batch size, sequence length, embedding dimensionality (hidden_size)
 
         # calculate query, key, values for all heads in batch and move head forward to be the batch dim
-        q, k, v = self.c_attn(x).split(self.d_model, dim=2)
-        k = k.view(B, T, self.n_head, C // self.n_head).transpose(
+        q, k, v = self.c_attn(x).split(self.hidden_size, dim=2)
+        k = k.view(
+            B, T, self.num_attention_heads, C // self.num_attention_heads
+        ).transpose(
             1, 2
         )  # (B, nh, T, hs)
-        q = q.view(B, T, self.n_head, C // self.n_head).transpose(
+        q = q.view(
+            B, T, self.num_attention_heads, C // self.num_attention_heads
+        ).transpose(
             1, 2
         )  # (B, nh, T, hs)
-        v = v.view(B, T, self.n_head, C // self.n_head).transpose(
+        v = v.view(
+            B, T, self.num_attention_heads, C // self.num_attention_heads
+        ).transpose(
             1, 2
         )  # (B, nh, T, hs)
 
@@ -76,18 +82,21 @@ class Attention(nn.Module):
 
 
 class Block(nn.Module):
-    def __init__(self, d_model, n_head, max_len, dropout):
+    def __init__(self, hidden_size, num_attention_heads, max_len, dropout):
         super().__init__()
-        self.ln_1 = nn.LayerNorm(d_model)
+        self.ln_1 = nn.LayerNorm(hidden_size)
         self.attn = Attention(
-            d_model=d_model, n_head=n_head, max_len=max_len, dropout=dropout
+            hidden_size=hidden_size,
+            num_attention_heads=num_attention_heads,
+            max_len=max_len,
+            dropout=dropout,
         )
-        self.ln_2 = nn.LayerNorm(d_model)
+        self.ln_2 = nn.LayerNorm(hidden_size)
         self.mlp = nn.ModuleDict(
             dict(
-                c_fc=nn.Linear(d_model, 4 * d_model),
+                c_fc=nn.Linear(hidden_size, 4 * hidden_size),
                 act=nn.GELU(approximate="tanh"),
-                c_proj=nn.Linear(4 * d_model, d_model),
+                c_proj=nn.Linear(4 * hidden_size, hidden_size),
                 dropout=nn.Dropout(dropout),
             )
         )

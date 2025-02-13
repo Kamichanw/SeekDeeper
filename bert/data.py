@@ -11,12 +11,22 @@ from datasets import load_dataset, Features, Value
 from torch.utils.data import DataLoader
 from torch.utils.data import Dataset
 
-import config
+import bert.config as config
 
 
 class BERTDataset(Dataset):
-    ''' This is for processing the corpus  '''
-    def __init__(self, corpus_path, vocab, seq_len, encoding="utf-8", corpus_lines=None, on_memory=True, loading_ratio = 0.00001):
+    """This is for processing the corpus"""
+
+    def __init__(
+        self,
+        corpus_path,
+        vocab,
+        seq_len,
+        encoding="utf-8",
+        corpus_lines=None,
+        on_memory=True,
+        loading_ratio=0.00001,
+    ):
         self.vocab = vocab
         self.seq_len = seq_len
 
@@ -40,10 +50,14 @@ class BERTDataset(Dataset):
 
             if on_memory:  # to save memory, just load part of the corpus to train
                 self.lines = []
-                for i, line in tqdm.tqdm(enumerate(f), desc="Loading Dataset", total=num_load_lines):
-                    if i >= num_load_lines:  # Stop once the required number of lines is loaded
+                for i, line in tqdm.tqdm(
+                    enumerate(f), desc="Loading Dataset", total=num_load_lines
+                ):
+                    if (
+                        i >= num_load_lines
+                    ):  # Stop once the required number of lines is loaded
                         break
-                    if line.strip(): # not empty
+                    if line.strip():  # not empty
                         self.lines.append(line[:-1].split("\t"))
                 print(f"length of self.lines: {len(self.lines)}")
                 self.corpus_lines = len(self.lines)
@@ -62,14 +76,19 @@ class BERTDataset(Dataset):
             # Read only the specified percentage of lines based on loading_ratio
             # Instead of random skipping, we now limit the reading to num_load_lines
             self.lines = []
-            for i, line in tqdm.tqdm(enumerate(self.file), desc="Loading Dataset", total=num_load_lines):
-                if i >= num_load_lines:  # Stop once the required number of lines is read
+            for i, line in tqdm.tqdm(
+                enumerate(self.file), desc="Loading Dataset", total=num_load_lines
+            ):
+                if (
+                    i >= num_load_lines
+                ):  # Stop once the required number of lines is read
                     break
                 if line.strip():  # Skip empty lines
                     self.lines.append(line[:-1].split("\t"))
             self.corpus_lines = len(self.lines)
-            print(f"Loaded {self.corpus_lines} lines into memory with loading_ratio: {loading_ratio}")
-
+            print(
+                f"Loaded {self.corpus_lines} lines into memory with loading_ratio: {loading_ratio}"
+            )
 
     def __len__(self):
         return self.corpus_lines
@@ -88,17 +107,23 @@ class BERTDataset(Dataset):
 
         # segment_label = ([1 for _ in range(len(t1))] + [2 for _ in range(len(t2))])[:self.seq_len]
         # 0 for sentence A, 1 for sentence B
-        segment_label = ([0 for _ in range(len(t1))] + [1 for _ in range(len(t2))])[:self.seq_len]
-        bert_input = (t1 + t2)[:self.seq_len]
-        bert_label = (t1_label + t2_label)[:self.seq_len]
+        segment_label = ([0 for _ in range(len(t1))] + [1 for _ in range(len(t2))])[
+            : self.seq_len
+        ]
+        bert_input = (t1 + t2)[: self.seq_len]
+        bert_label = (t1_label + t2_label)[: self.seq_len]
 
         padding = [self.vocab.pad_index for _ in range(self.seq_len - len(bert_input))]
-        bert_input.extend(padding), bert_label.extend(padding), segment_label.extend(padding)
+        bert_input.extend(padding), bert_label.extend(padding), segment_label.extend(
+            padding
+        )
 
-        output = {"bert_input": bert_input,
-                  "bert_label": bert_label,
-                  "segment_label": segment_label,
-                  "is_next": is_next_label}
+        output = {
+            "bert_input": bert_input,
+            "bert_label": bert_label,
+            "segment_label": segment_label,
+            "is_next": is_next_label,
+        }
 
         return {key: torch.tensor(value) for key, value in output.items()}
 
@@ -163,7 +188,9 @@ class BERTDataset(Dataset):
         if self.on_memory:
             t1, t2 = self.lines[item]
             if not t1 or not t2:  # Skip empty lines
-                return self.get_corpus_line(item + 1)  # Try next line, but may cause some duplications(quite little)
+                return self.get_corpus_line(
+                    item + 1
+                )  # Try next line, but may cause some duplications(quite little)
             return t1, t2
         else:
             line = self.file.__next__()
@@ -196,7 +223,9 @@ class BERTDataset(Dataset):
             while True:
                 # Randomly select a line
                 line = self.lines[random.randrange(len(self.lines))]
-                if len(line) > 1 and line[1].strip():  # Ensure the second part (t2) is non-empty
+                if (
+                    len(line) > 1 and line[1].strip()
+                ):  # Ensure the second part (t2) is non-empty
                     return line[1]  # Return the second part of the line (t2)
         else:
             while True:
@@ -204,12 +233,18 @@ class BERTDataset(Dataset):
                 if line is None:  # If line is None, reset file reading
                     self.file.close()
                     self.file = open(self.corpus_path, "r", encoding=self.encoding)
-                    for _ in range(random.randint(self.corpus_lines if self.corpus_lines < 1000 else 1000)):
+                    for _ in range(
+                        random.randint(
+                            self.corpus_lines if self.corpus_lines < 1000 else 1000
+                        )
+                    ):
                         self.random_file.__next__()  # Skip random lines
                     line = self.random_file.__next__()
 
                 parts = line[:-1].split("\t")  # Split the line into two parts
-                if len(parts) > 1 and parts[1].strip():  # Ensure the second part (t2) is non-empty
+                if (
+                    len(parts) > 1 and parts[1].strip()
+                ):  # Ensure the second part (t2) is non-empty
                     return parts[1]  # Return the second part of the line (t2)
 
 
@@ -223,8 +258,16 @@ class TorchVocab(object):
         itos: A list of token strings indexed by their numerical identifiers.
     """
 
-    def __init__(self, counter, max_size=None, min_freq=1, specials=['<pad>', '<oov>'],
-                 vectors=None, unk_init=None, vectors_cache=None):
+    def __init__(
+        self,
+        counter,
+        max_size=None,
+        min_freq=1,
+        specials=["<pad>", "<oov>"],
+        vectors=None,
+        unk_init=None,
+        vectors_cache=None,
+    ):
         """Create a Vocab object from a collections.Counter.
         Arguments:
             counter: collections.Counter object holding the frequencies of
@@ -306,8 +349,12 @@ class Vocab(TorchVocab):
         self.eos_index = 2
         self.sos_index = 3
         self.mask_index = 4
-        super().__init__(counter, specials=["<pad>", "<unk>", "<eos>", "<sos>", "<mask>"],
-                         max_size=max_size, min_freq=min_freq)
+        super().__init__(
+            counter,
+            specials=["<pad>", "<unk>", "<eos>", "<sos>", "<mask>"],
+            max_size=max_size,
+            min_freq=min_freq,
+        )
 
     def to_seq(self, sentece, seq_len, with_eos=False, with_sos=False) -> list:
         pass
@@ -316,7 +363,7 @@ class Vocab(TorchVocab):
         pass
 
     @staticmethod
-    def load_vocab(vocab_path: str) -> 'Vocab':
+    def load_vocab(vocab_path: str) -> "Vocab":
         with open(vocab_path, "rb") as f:
             return pickle.load(f)
 
@@ -341,7 +388,9 @@ class WordVocab(Vocab):
                 counter[word] += 1
         super().__init__(counter, max_size=max_size, min_freq=min_freq)
 
-    def to_seq(self, sentence, seq_len=None, with_eos=False, with_sos=False, with_len=False):
+    def to_seq(
+        self, sentence, seq_len=None, with_eos=False, with_sos=False, with_len=False
+    ):
         if isinstance(sentence, str):
             sentence = sentence.split()
 
@@ -364,16 +413,16 @@ class WordVocab(Vocab):
         return (seq, origin_seq_len) if with_len else seq
 
     def from_seq(self, seq, join=False, with_pad=False):
-        words = [self.itos[idx]
-                 if idx < len(self.itos)
-                 else "<%d>" % idx
-                 for idx in seq
-                 if not with_pad or idx != self.pad_index]
+        words = [
+            self.itos[idx] if idx < len(self.itos) else "<%d>" % idx
+            for idx in seq
+            if not with_pad or idx != self.pad_index
+        ]
 
         return " ".join(words) if join else words
 
     @staticmethod
-    def load_vocab(vocab_path: str) -> 'WordVocab':
+    def load_vocab(vocab_path: str) -> "WordVocab":
         os.makedirs(os.path.dirname(vocab_path), exist_ok=True)
         with open(vocab_path, "rb") as f:
             return pickle.load(f)
@@ -392,11 +441,13 @@ def build():
         # Save Vocab
         vocab.save_vocab(config.vocab_path)
     else:
-        print("Vocab already exists! If you want to rebuild it, please delete the existing vocab file.")
+        print(
+            "Vocab already exists! If you want to rebuild it, please delete the existing vocab file."
+        )
 
 
 # load bert-pertrain dataset: bookcorpus and English wikipedia
-def split_into_sentences(text): # with nltk
+def split_into_sentences(text):  # with nltk
     return nltk.sent_tokenize(text)
 
 
@@ -421,7 +472,7 @@ def save_to_file(pairs, file_path):
                 f.write(pair + "\n")
 
 
-def load_bookcorpus_wikipedia(book_loading_ratio=0.1, wiki_loading_ratio=1/41):
+def load_bookcorpus_wikipedia(book_loading_ratio=0.1, wiki_loading_ratio=1 / 41):
 
     bookcorpus_path = config.base_dir / "dataset" / "bookcorpus_sentences.txt"
     wikipedia_path = config.base_dir / "dataset" / "wikipedia_sentences.txt"
@@ -453,19 +504,23 @@ def load_bookcorpus_wikipedia(book_loading_ratio=0.1, wiki_loading_ratio=1/41):
             num_wiki_files = ceil(41 * wiki_loading_ratio)
 
             # data structure of wikipedia
-            features = Features({
-                'id': Value('string'),
-                'url': Value('string'),
-                'title': Value('string'),
-                'text': Value('string')
-            })
+            features = Features(
+                {
+                    "id": Value("string"),
+                    "url": Value("string"),
+                    "title": Value("string"),
+                    "text": Value("string"),
+                }
+            )
             wiki_urls = [
-                f"https://huggingface.co/datasets/wikimedia/wikipedia/resolve/refs%2Fconvert%2Fparquet/20231101.en/train/000{i}.parquet" # use version-20231101.en for Wikipedia(latest in wikimedia in huggingface)
+                f"https://huggingface.co/datasets/wikimedia/wikipedia/resolve/refs%2Fconvert%2Fparquet/20231101.en/train/000{i}.parquet"  # use version-20231101.en for Wikipedia(latest in wikimedia in huggingface)
                 for i in range(num_wiki_files)
             ]
             print("Loading Wikipedia URLs:", wiki_urls)
             # extract train data
-            wikipedia_ds = load_dataset("parquet", data_files=wiki_urls, split="train", features=features)
+            wikipedia_ds = load_dataset(
+                "parquet", data_files=wiki_urls, split="train", features=features
+            )
             wikipedia_texts = [example["text"] for example in wikipedia_ds]
 
             wikipedia_sentences = []
@@ -515,7 +570,9 @@ def _load_sst2(tokenizer, loading_ratio, num_proc, splits, **kwargs):
     valid_data = dataset["validation"].select(range(valid_subset_size))
 
     def tokenize_function(examples):
-        return tokenizer(examples["sentence"], padding="max_length", truncation=True, max_length=128)
+        return tokenizer(
+            examples["sentence"], padding="max_length", truncation=True, max_length=128
+        )
 
     # tokenization
     tokenized_train = train_data.map(tokenize_function, batched=True)
@@ -523,14 +580,14 @@ def _load_sst2(tokenizer, loading_ratio, num_proc, splits, **kwargs):
 
     # DataLoader format
     def collate_fn(batch):
-        input_ids = [item['input_ids'] for item in batch]
-        attention_mask = [item['attention_mask'] for item in batch]
-        labels = [item['label'] for item in batch]
+        input_ids = [item["input_ids"] for item in batch]
+        attention_mask = [item["attention_mask"] for item in batch]
+        labels = [item["label"] for item in batch]
 
         return (
             torch.tensor(input_ids, dtype=torch.long),
             torch.tensor(attention_mask, dtype=torch.long),
-            torch.tensor(labels, dtype=torch.long)
+            torch.tensor(labels, dtype=torch.long),
         )
 
     dataloaders = []
@@ -550,7 +607,13 @@ def _load_sst2(tokenizer, loading_ratio, num_proc, splits, **kwargs):
     return dataloaders
 
 
-def load_data(name: str, loading_ratio: float = 1, num_proc: int = 0, splits: list = None, **kwargs):
+def load_data(
+    name: str,
+    loading_ratio: float = 1,
+    num_proc: int = 1,
+    splits: list = None,
+    **kwargs,
+):
     """
     Load different datasets
     :param name: name of dataset
@@ -570,10 +633,14 @@ def load_data(name: str, loading_ratio: float = 1, num_proc: int = 0, splits: li
     }
 
     if name.lower() not in dispatch:
-        raise ValueError(f"Unsupported dataset '{name}'. Supported datasets are: {list(dispatch.keys())}")
+        raise ValueError(
+            f"Unsupported dataset '{name}'. Supported datasets are: {list(dispatch.keys())}"
+        )
 
     if not (0 < loading_ratio <= 1):
         raise ValueError("Loading ratio should be between 0 and 1")
 
     # 调用对应的加载函数
-    return tokenizer, *dispatch[name.lower()](tokenizer, loading_ratio, num_proc, splits, **kwargs)
+    return tokenizer, *dispatch[name.lower()](
+        tokenizer, loading_ratio, num_proc, splits, **kwargs
+    )

@@ -11,9 +11,9 @@ torch.manual_seed(3407)
 
 # model parameter setting (Transformer base)
 max_len = 512
-d_model = 512
-n_layer = 6
-n_head = 8
+hidden_size = 512
+num_hidden_layers = 6
+num_attention_heads = 8
 ffn_hidden = 2048
 dropout = 0.1
 

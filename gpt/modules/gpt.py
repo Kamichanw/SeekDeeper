@@ -10,28 +10,36 @@ from .layers import Block
 class GPT(nn.Module):
     """GPT Language Model"""
 
-    def __init__(self, vocab_size, max_len, d_model, n_head, n_layer, dropout):
+    def __init__(
+        self,
+        vocab_size,
+        max_len,
+        hidden_size,
+        num_attention_heads,
+        num_hidden_layers,
+        dropout,
+    ):
         super().__init__()
         self.max_len = max_len
         self.transformer = nn.ModuleDict(
             dict(
-                tokens_embed=nn.Embedding(vocab_size, d_model),
-                positions_embed=nn.Embedding(max_len, d_model),
+                tokens_embed=nn.Embedding(vocab_size, hidden_size),
+                positions_embed=nn.Embedding(max_len, hidden_size),
                 drop=nn.Dropout(dropout),
                 h=nn.ModuleList(
                     [
                         Block(
-                            d_model=d_model,
-                            n_head=n_head,
+                            hidden_size=hidden_size,
+                            num_attention_heads=num_attention_heads,
                             max_len=max_len,
                             dropout=dropout,
                         )
-                        for _ in range(n_layer)
+                        for _ in range(num_hidden_layers)
                     ]
                 ),
             )
         )
-        self.lm_head = nn.Linear(d_model, vocab_size, bias=False)
+        self.lm_head = nn.Linear(hidden_size, vocab_size, bias=False)
 
         self.transformer.tokens_embed.weight = (
             self.lm_head.weight
@@ -117,9 +125,9 @@ class GPT(nn.Module):
         default_config = dict(
             vocab_size=40478,
             max_len=512,
-            d_model=768,
-            n_head=12,
-            n_layer=12,
+            hidden_size=768,
+            num_attention_heads=12,
+            num_hidden_layers=12,
             dropout=0.1,
         )
 
@@ -190,10 +198,10 @@ class GPT(nn.Module):
         # forward the GPT model itself
         tok_emb = self.transformer.tokens_embed(
             input
-        )  # token embeddings of shape (b, t, d_model)
+        )  # token embeddings of shape (b, t, hidden_size)
         pos_emb = self.transformer.positions_embed(
             pos
-        )  # position embeddings of shape (t, d_model)
+        )  # position embeddings of shape (t, hidden_size)
         x = self.transformer.drop(tok_emb + pos_emb)
 
         if input_mask is not None and input_mask.dim() == 2:
@@ -241,10 +249,24 @@ class GPT(nn.Module):
 
 class GPTClassifier(GPT):
     def __init__(
-        self, n_classes, vocab_size, max_len, d_model, n_head, n_layer, dropout
+        self,
+        n_classes,
+        vocab_size,
+        max_len,
+        hidden_size,
+        num_attention_heads,
+        num_hidden_layers,
+        dropout,
     ):
-        super().__init__(vocab_size, max_len, d_model, n_head, n_layer, dropout)
-        self.clf_head = nn.Linear(d_model, n_classes, bias=False)
+        super().__init__(
+            vocab_size,
+            max_len,
+            hidden_size,
+            num_attention_heads,
+            num_hidden_layers,
+            dropout,
+        )
+        self.clf_head = nn.Linear(hidden_size, n_classes, bias=False)
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, input, input_mask=None):
