@@ -79,7 +79,7 @@ BERT使用WordPiece方法进行tokenize，首先对数据集tokenize生成词汇
 
 ## [Fine-tuning](./finetune.ipynb) 
 
-在数据集上训练过后，BERT模型可以认为有学习到一定的语言能力。本实现选择在SST-2数据集上进行微调，用于文本情感分类任务。这首先需要在原本的BERT模型架构的最后加一个线性二分类层。我从huggingface上加载[bert-base-uncased](https://huggingface.co/google-bert/bert-base-uncased)的权重到自己的模型中，然后在数据集上进行训练微调。使用的优化器是AdamW，其中lr为2e-5，β1和β2分别为默认的0.9和0.999，权重衰减同样为0.01。
+在数据集上训练过后，BERT模型可以认为有学习到一定的语言能力。本实现选择在SST-2数据集上进行微调，用于文本情感分类任务。这首先需要在原本的BERT模型架构的最后加一个线性二分类层。我从huggingface上加载[bert-base-uncased](https://huggingface.co/google-bert/bert-base-uncased)的权重到自己的模型中，然后在数据集上进行训练微调。使用的优化器是AdamW，其中lr为4e-5，β1和β2分别为默认的0.9和0.999，权重衰减同样为0.01。
 
 ## [Inferencing](./inference.ipynb) 
 

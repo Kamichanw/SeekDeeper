@@ -1,8 +1,6 @@
 import os
 import torch
 import torch.nn as nn
-from transformers import AutoModel, BertConfig
-
 from torch.nn import functional as F
 
 from .layers import *
@@ -38,7 +36,7 @@ class BertModel(nn.Module):
         max_len=512,
         num_hidden_layers=12,
         num_attention_heads=12,
-        intermediate_size=3072,
+        intermediate_size=3072, # 4*hidden_size
         dropout=0.1,
         add_pooling_layer=True,
         pad_token_idx=None,
@@ -73,21 +71,27 @@ class BertModel(nn.Module):
         self.apply(_init_weights)
 
     def forward(self, x, token_type_ids=None, input_mask=None):
+
+
         if input_mask is not None and input_mask.dim() == 2:
-            # [batch_size, seq_len] -> [batch_size, 1, 1, seq_len]
-            input_mask = input_mask.unsqueeze(1).unsqueeze(2)
+            # [batch_size, seq_len] -> [batch_size, 1, seq_len, seq_len]
+            input_mask = input_mask.unsqueeze(1).repeat(1, x.size(1), 1).unsqueeze(1)
+
 
         x = self.embeddings(x, token_type_ids)
         x = self.encoder(x, input_mask)
 
+
         if self.pooler is not None:
             pooled_output = torch.tanh(self.pooler.dense(x[:, 0]))
+
+
             return x, pooled_output
 
         return x
 
     @classmethod
-    def from_pretrained(cls, model_name_or_path: str):
+    def from_pretrained(cls, model_name_or_path: str, num_frozen_layers):
         """
         Loads pretrained Bert model from transformers library.
 
@@ -98,7 +102,9 @@ class BertModel(nn.Module):
         import transformers
 
         try:
-            HFModelClass = getattr(transformers, cls.__name__)
+            # cls.__name__ is the name of the class, e.g. BertModel
+            cls_name = "BertModel"
+            HFModelClass = getattr(transformers, cls_name)
         except AttributeError:
             raise ValueError(f"Transformers library doesn't have a {cls_name} class")
 
@@ -123,22 +129,32 @@ class BertModel(nn.Module):
         sd_keys = set(sd.keys())
         sd_keys_hf = set(sd_hf.keys())
 
-        if sd_keys != sd_keys_hf:
+        # Check if there are any missing keys in our model
+        if len(sd_keys_hf) > len(sd_keys):
             raise ValueError(
                 "Some keys are missing in one of the models. "
-                f"HF: {sd_keys - sd_keys_hf}, Ours: {sd_keys_hf - sd_keys}"
+                f"HF: {sd_keys_hf - sd_keys}, Ours: {sd_keys - sd_keys_hf}"
             )
 
-        for k in sd_keys:
+        for k in sd_keys_hf:
             assert (
                 sd_hf[k].shape == sd[k].shape
             ), f"Shape mismatch for key {k}: {sd_hf[k].shape} vs {sd[k].shape}"
             with torch.no_grad():
                 sd[k].copy_(sd_hf[k])
 
+        if num_frozen_layers > 0:
+            layers_to_freeze = range(num_frozen_layers)
+            for name, param in model.named_parameters():
+                param.requires_grad = not any(f"encoder.layer.{i}." in name for i in layers_to_freeze)
+
+        num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        print(f"Number of trainable parameters: {num_params / 1e6:.2f}M")
+
         return model
 
 
+# given hidden states of input sequence, output the prediction scores for each token in the vocab
 class BertLMPredictionHead(nn.Module):
     def __init__(self, vocab_size, hidden_size):
         super().__init__()
@@ -234,7 +250,8 @@ class BertForPreTraining(nn.Module):
         )
         self.cls.apply(_init_weights)
 
-        # weight tying
+        # weight tying: word_embeddings and vocab prediction decoder weights
+        # word_embeddings (vocab_size, hidden_size); decoder.weight (hidden_size, vocab_size)
         self.cls.predictions.decoder.weight = (
             self.bert.embeddings.word_embeddings.weight
         )
@@ -250,10 +267,11 @@ class BertForPreTraining(nn.Module):
         sequence_output, pooled_output = self.bert(
             input_ids, token_type_ids, attention_mask
         )
-        prediction_scores, seq_relationship_score = self.cls(
-            sequence_output, pooled_output
-        )
 
+        prediction_scores = self.cls.predictions(sequence_output)
+        seq_relationship_score = self.cls.seq_relationship(pooled_output)
+
+        total_loss = None
         # if labels are provided, add the loss and return it
         if labels is not None:
             loss_fct = nn.CrossEntropyLoss()
@@ -267,3 +285,55 @@ class BertForPreTraining(nn.Module):
         
         output = (prediction_scores, seq_relationship_score)
         return ((total_loss,) + output) if total_loss is not None else output
+
+class BERTTextClassifier(BertModel):
+    def __init__(
+        self,
+        vocab_size,
+        type_vocab_size=2,
+        hidden_size=768,
+        max_len=512,
+        num_hidden_layers=12,
+        num_attention_heads=12,
+        intermediate_size = 3072,
+        dropout=0.1,
+        add_pooling_layer=True,
+        pad_token_idx=None,
+        num_classes=2,
+    ):
+        # Initialize the parent BERT class with the given parameters
+        super().__init__(
+            vocab_size,
+            type_vocab_size,
+            hidden_size,
+            max_len,
+            num_hidden_layers,
+            num_attention_heads,
+            intermediate_size,
+            dropout,
+            add_pooling_layer,
+            pad_token_idx
+        )
+        # classifier for text classification
+        self.classifier = nn.Linear(hidden_size, num_classes)
+
+    def forward(self, input_ids, token_type_ids=None, attention_mask=None, labels=None):
+        x, pooled_output = super().forward(input_ids, token_type_ids, attention_mask)  # get the output from BERT
+        logits = self.classifier(pooled_output)
+
+        # if labels are provided, add the loss and return it
+        if labels is not None:
+            loss_fct = nn.CrossEntropyLoss()
+            loss = loss_fct(logits, labels)
+            return loss, logits  # return the loss and logits for evaluation
+        else:
+            return logits  # return the logits for inference
+
+    @torch.no_grad()
+    # for inference
+    def text_clf(self, input_ids):
+        self.eval()
+        logits = self.forward(input_ids)
+        predicted_class = torch.argmax(logits, dim=1)
+        predicted_class = predicted_class.cpu().numpy()
+        return predicted_class

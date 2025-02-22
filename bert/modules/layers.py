@@ -25,6 +25,7 @@ class BertEmbeddings(nn.Module):
         self.word_embeddings = nn.Embedding(
             vocab_size, hidden_size, padding_idx=pad_token_idx
         )
+        # learnable position embeddings
         self.position_embeddings = nn.Embedding(max_len, hidden_size)
 
         # token type embeddings is used for Next Sentence Prediction (NSP) task
@@ -41,7 +42,7 @@ class BertEmbeddings(nn.Module):
         input_ids: torch.LongTensor,
         token_type_ids: Optional[torch.LongTensor] = None,
     ) -> torch.Tensor:
-        batch_size, seq_len, hidden_size = input_ids.size()
+        batch_size, seq_len = input_ids.size()
 
         # When its auto-generated, token_type_ids can be None
         if token_type_ids is None:
@@ -108,7 +109,7 @@ class SelfAttention(nn.Module):
                 att = att.masked_fill(mask == 0, float("-inf"))
             att = F.softmax(att, dim=-1)
             att = self.dropout(att)
-            y = torch.matmul(att, v)  # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
+            att = torch.matmul(att, v)  # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
 
         # re-assemble all head outputs side by side
         y = att.transpose(1, 2).contiguous().view(bsz, -1, self.all_head_size)

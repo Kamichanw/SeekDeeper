@@ -79,7 +79,7 @@ BERT uses the WordPiece method for tokenization, first generating a vocabulary b
 
 ## [Fine-tuning](./finetune.ipynb) 
 
-After training on the dataset, the BERT model can be considered to have learned some language abilities. In this implementation, fine-tuning is performed on the SST-2 dataset for a text sentiment classification task. This requires adding a linear binary classification layer to the end of the original BERT model architecture. I load the weights of [bert-base-uncased](https://huggingface.co/google-bert/bert-base-uncased) from Hugging Face into my model, then fine-tune it on the dataset. The optimizer used is AdamW, with a learning rate (lr) of 2e-5, β1 and β2 set to the default values of 0.9 and 0.999, and the weight decay is also 0.01.
+After training on the dataset, the BERT model can be considered to have learned some language abilities. In this implementation, fine-tuning is performed on the SST-2 dataset for a text sentiment classification task. This requires adding a linear binary classification layer to the end of the original BERT model architecture. I load the weights of [bert-base-uncased](https://huggingface.co/google-bert/bert-base-uncased) from Hugging Face into my model, then fine-tune it on the dataset. The optimizer used is AdamW, with a learning rate (lr) of 4e-5, β1 and β2 set to the default values of 0.9 and 0.999, and the weight decay is also 0.01.
 
 ## [Inferencing](./inference.ipynb) 
 
