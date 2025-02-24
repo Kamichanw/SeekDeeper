@@ -1,5 +1,5 @@
 from math import ceil
-from typing import Optional, Sequence
+from typing import Sequence
 
 import datasets
 from datasets import DownloadManager

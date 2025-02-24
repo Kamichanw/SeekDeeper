@@ -1,4 +1,3 @@
-import os
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
@@ -36,7 +35,7 @@ class BertModel(nn.Module):
         max_len=512,
         num_hidden_layers=12,
         num_attention_heads=12,
-        intermediate_size=3072, # 4*hidden_size
+        intermediate_size=3072,  # 4*hidden_size
         dropout=0.1,
         add_pooling_layer=True,
         pad_token_idx=None,
@@ -72,26 +71,22 @@ class BertModel(nn.Module):
 
     def forward(self, x, token_type_ids=None, input_mask=None):
 
-
         if input_mask is not None and input_mask.dim() == 2:
             # [batch_size, seq_len] -> [batch_size, 1, seq_len, seq_len]
             input_mask = input_mask.unsqueeze(1).repeat(1, x.size(1), 1).unsqueeze(1)
 
-
         x = self.embeddings(x, token_type_ids)
         x = self.encoder(x, input_mask)
 
-
         if self.pooler is not None:
             pooled_output = torch.tanh(self.pooler.dense(x[:, 0]))
-
 
             return x, pooled_output
 
         return x
 
     @classmethod
-    def from_pretrained(cls, model_name_or_path: str, num_frozen_layers):
+    def from_pretrained(cls, model_name_or_path: str):
         """
         Loads pretrained Bert model from transformers library.
 
@@ -103,13 +98,13 @@ class BertModel(nn.Module):
 
         try:
             # cls.__name__ is the name of the class, e.g. BertModel
-            cls_name = "BertModel"
+            cls_name = cls.__name__
             HFModelClass = getattr(transformers, cls_name)
         except AttributeError:
             raise ValueError(f"Transformers library doesn't have a {cls_name} class")
 
         model_hf = HFModelClass.from_pretrained(model_name_or_path)
-        sd_hf = model_hf.state_dict()
+        sd_hf = {k.removeprefix("bert."): v for k, v in model_hf.state_dict().items()}
         config_hf: transformers.BertConfig = model_hf.config
 
         model = cls(
@@ -129,24 +124,18 @@ class BertModel(nn.Module):
         sd_keys = set(sd.keys())
         sd_keys_hf = set(sd_hf.keys())
 
-        # Check if there are any missing keys in our model
-        if len(sd_keys_hf) > len(sd_keys):
+        if sd_keys != sd_keys_hf:
             raise ValueError(
                 "Some keys are missing in one of the models. "
-                f"HF: {sd_keys_hf - sd_keys}, Ours: {sd_keys - sd_keys_hf}"
+                f"HF: {sd_keys - sd_keys_hf}, Ours: {sd_keys_hf - sd_keys}"
             )
 
-        for k in sd_keys_hf:
+        for k in sd_keys:
             assert (
                 sd_hf[k].shape == sd[k].shape
             ), f"Shape mismatch for key {k}: {sd_hf[k].shape} vs {sd[k].shape}"
             with torch.no_grad():
                 sd[k].copy_(sd_hf[k])
-
-        if num_frozen_layers > 0:
-            layers_to_freeze = range(num_frozen_layers)
-            for name, param in model.named_parameters():
-                param.requires_grad = not any(f"encoder.layer.{i}." in name for i in layers_to_freeze)
 
         num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
         print(f"Number of trainable parameters: {num_params / 1e6:.2f}M")
@@ -206,12 +195,12 @@ class BertOnlyNSPHead(nn.Module):
         return seq_relationship_score
 
 
-class BertForPreTraining(nn.Module):
+class BertForPreTraining(BertModel):
     """
     Bert Model with two heads on top as done during the pretraining: a `masked language modeling` head and a `next
     sentence prediction (classification)` head.
     """
-    
+
     def __init__(
         self,
         vocab_size,
@@ -224,11 +213,7 @@ class BertForPreTraining(nn.Module):
         dropout=0.1,
         pad_token_idx=None,
     ):
-        super().__init__()
-
-        self.vocab_size = vocab_size
-
-        self.bert = BertModel(
+        super().__init__(
             vocab_size=vocab_size,
             type_vocab_size=type_vocab_size,
             hidden_size=hidden_size,
@@ -239,6 +224,8 @@ class BertForPreTraining(nn.Module):
             dropout=dropout,
             pad_token_idx=pad_token_idx,
         )
+
+        self.vocab_size = vocab_size
 
         self.cls = nn.ModuleDict(
             dict(
@@ -252,9 +239,7 @@ class BertForPreTraining(nn.Module):
 
         # weight tying: word_embeddings and vocab prediction decoder weights
         # word_embeddings (vocab_size, hidden_size); decoder.weight (hidden_size, vocab_size)
-        self.cls.predictions.decoder.weight = (
-            self.bert.embeddings.word_embeddings.weight
-        )
+        self.cls.predictions.decoder.weight = self.embeddings.word_embeddings.weight
 
     def forward(
         self,
@@ -264,7 +249,7 @@ class BertForPreTraining(nn.Module):
         labels=None,
         next_sentence_label=None,
     ):
-        sequence_output, pooled_output = self.bert(
+        sequence_output, pooled_output = super().forward(
             input_ids, token_type_ids, attention_mask
         )
 
@@ -282,11 +267,12 @@ class BertForPreTraining(nn.Module):
                 seq_relationship_score.view(-1, 2), next_sentence_label.view(-1)
             )
             total_loss = masked_lm_loss + next_sentence_loss
-        
+
         output = (prediction_scores, seq_relationship_score)
         return ((total_loss,) + output) if total_loss is not None else output
 
-class BERTTextClassifier(BertModel):
+
+class BertForSequenceClassification(BertModel):
     def __init__(
         self,
         vocab_size,
@@ -295,31 +281,32 @@ class BERTTextClassifier(BertModel):
         max_len=512,
         num_hidden_layers=12,
         num_attention_heads=12,
-        intermediate_size = 3072,
+        intermediate_size=3072,
         dropout=0.1,
-        add_pooling_layer=True,
         pad_token_idx=None,
         num_classes=2,
     ):
         # Initialize the parent BERT class with the given parameters
         super().__init__(
-            vocab_size,
-            type_vocab_size,
-            hidden_size,
-            max_len,
-            num_hidden_layers,
-            num_attention_heads,
-            intermediate_size,
-            dropout,
-            add_pooling_layer,
-            pad_token_idx
+            vocab_size=vocab_size,
+            type_vocab_size=type_vocab_size,
+            hidden_size=hidden_size,
+            max_len=max_len,
+            num_hidden_layers=num_hidden_layers,
+            num_attention_heads=num_attention_heads,
+            intermediate_size=intermediate_size,
+            dropout=dropout,
+            pad_token_idx=pad_token_idx,
         )
-        # classifier for text classification
+
+        self.dropout = nn.Dropout(dropout)
         self.classifier = nn.Linear(hidden_size, num_classes)
 
+        self.classifier.apply(_init_weights)
+
     def forward(self, input_ids, token_type_ids=None, attention_mask=None, labels=None):
-        x, pooled_output = super().forward(input_ids, token_type_ids, attention_mask)  # get the output from BERT
-        logits = self.classifier(pooled_output)
+        _, pooled_output = super().forward(input_ids, token_type_ids, attention_mask)
+        logits = self.classifier(self.dropout(pooled_output))
 
         # if labels are provided, add the loss and return it
         if labels is not None:
@@ -328,12 +315,3 @@ class BERTTextClassifier(BertModel):
             return loss, logits  # return the loss and logits for evaluation
         else:
             return logits  # return the logits for inference
-
-    @torch.no_grad()
-    # for inference
-    def text_clf(self, input_ids):
-        self.eval()
-        logits = self.forward(input_ids)
-        predicted_class = torch.argmax(logits, dim=1)
-        predicted_class = predicted_class.cpu().numpy()
-        return predicted_class

@@ -4,8 +4,6 @@ from torch import nn
 import math
 import torch.nn.functional as F
 
-from transformers import BertModel
-
 
 class BertEmbeddings(nn.Module):
     """Construct the embeddings from word, position and token_type embeddings.
@@ -109,7 +107,9 @@ class SelfAttention(nn.Module):
                 att = att.masked_fill(mask == 0, float("-inf"))
             att = F.softmax(att, dim=-1)
             att = self.dropout(att)
-            att = torch.matmul(att, v)  # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
+            att = torch.matmul(
+                att, v
+            )  # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
 
         # re-assemble all head outputs side by side
         y = att.transpose(1, 2).contiguous().view(bsz, -1, self.all_head_size)

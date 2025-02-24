@@ -1,363 +1,271 @@
-import os
-import pickle
+from dataclasses import dataclass
+from functools import partial
 import random
-from collections import Counter
 from math import ceil
+from typing import List
 
+import datasets
 import nltk
 import torch
-import tqdm
-from datasets import load_dataset, Features, Value
-from torch.utils.data import DataLoader
-from torch.utils.data import Dataset
+from torch.nn.utils.rnn import pad_sequence
+from torch.utils.data import DataLoader, Dataset
 
 import config
 
-class BERTDataset(Dataset):
-    """This is for processing the corpus"""
+
+@dataclass
+class PretrainDataSample:
+    """
+    A data sample for pretraining BERT.
+    """
+
+    input_ids: torch.Tensor
+    token_type_ids: torch.Tensor
+    labels: torch.Tensor
+    is_next: torch.Tensor
+
+
+class PretrainDataset(Dataset):
+    """
+    Prepare the data for pretraining Bert. It converts raw sentences into the format required for pretraining.
+    The dataset generate data for the following two tasks:
+
+        1. Masked Language Model : 3.3.1 Task #1: Masked LM
+        2. Next Sentence prediction : 3.3.2 Task #2: Next Sentence Prediction
+
+    Each sample is in the following format (see Figure 2):
+        [CLS] + masked_sentence_A + [SEP] + masked_sentence_B + [SEP]
+    """
+
     def __init__(
         self,
-        corpus_path,
+        data_source,
         tokenizer,
-        seq_len,
-        encoding="utf-8",
-        corpus_lines=None,
-        on_memory=True,
-        loading_ratio=0.00001,
     ):
         self.tokenizer = tokenizer
-        self.seq_len = seq_len
-
-        self.on_memory = on_memory
-        self.corpus_lines = corpus_lines
-        self.corpus_path = corpus_path
-        self.encoding = encoding
-        self.loading_ratio = loading_ratio  # loading ratio for corpus lines
-
-        with open(corpus_path, "r", encoding=encoding) as f:
-
-            num_lines = sum(1 for _ in f)
-            num_load_lines = int(num_lines * self.loading_ratio)
-            print(f"num_load_lines: {num_load_lines}")
-
-            #  Reset file pointer to the beginning
-            f.seek(0)
-
-            if self.corpus_lines is None and not on_memory:
-                self.corpus_lines = num_load_lines
-
-            if on_memory:  # to save memory, just load part of the corpus to train
-                self.lines = []
-                for i, line in tqdm.tqdm(
-                    enumerate(f), desc="Loading Dataset", total=num_load_lines
-                ):
-                    if (
-                        i >= num_load_lines
-                    ):  # Stop once the required number of lines is loaded
-                        break
-                    if line.strip():  # not empty
-                        self.lines.append(line[:-1].split("\t"))
-                print(f"length of self.lines: {len(self.lines)}")
-                self.corpus_lines = len(self.lines)
-
-        if not on_memory:
-            # If not loading into memory, we still respect the loading_ratio and limit the lines read.
-            self.file = open(corpus_path, "r", encoding=encoding)
-
-            self.lines = []
-            for i, line in tqdm.tqdm(
-                enumerate(self.file), desc="Loading Dataset", total=num_load_lines
-            ):
-                if (
-                    i >= num_load_lines
-                ):  # Stop once the required number of lines is read
-                    break
-                if line.strip():  # Skip empty lines
-                    self.lines.append(line[:-1].split("\t"))
-            self.corpus_lines = len(self.lines)
-            print(
-                f"Loaded {self.corpus_lines} lines into memory with loading_ratio: {loading_ratio}"
-            )
+        self.data_source = data_source
 
     def __len__(self):
-        return self.corpus_lines
+        # the last sentence does not have a next sentence
+        return len(self.data_source) - 1
 
-    def __getitem__(self, item):
-        t1, t2, is_next_label = self.random_sent(item)
-        t1_random, t1_label = self.random_word(t1)
-        t2_random, t2_label = self.random_word(t2)
+    def mask_sentence(self, token_ids: List[int]):
+        masked_lm_label = []
 
-        # Add special tokens
-        t1_tokens = [self.tokenizer.cls_token_id] + t1_random + [self.tokenizer.sep_token_id]
-        t2_tokens = t2_random + [self.tokenizer.sep_token_id]
-
-        # Add padding if necessary
-        bert_input = (t1_tokens + t2_tokens)[:self.seq_len]
-        padding = [self.tokenizer.pad_token_id for _ in range(self.seq_len - len(bert_input))]
-        bert_input.extend(padding)
-
-        # Attention mask (1 for real tokens, 0 for padding tokens)
-        attention_mask = [1 if token != self.tokenizer.pad_token_id else 0 for token in bert_input]
-
-        # Labels for masked tokens
-        t1_label = [self.tokenizer.pad_token_id] + t1_label + [self.tokenizer.pad_token_id]
-        t2_label = t2_label + [self.tokenizer.pad_token_id]
-        bert_label = (t1_label + t2_label)[:self.seq_len]
-
-        # Segment labels
-        segment_label = ([0 for _ in range(len(t1_tokens))] + [1 for _ in range(len(t2_tokens))])[:self.seq_len]
-
-        # Pad the labels
-        bert_label.extend([self.tokenizer.pad_token_id] * (self.seq_len - len(bert_label)))
-        segment_label.extend([0] * (self.seq_len - len(segment_label)))
-
-        output = {
-            "bert_input": bert_input,
-            "bert_attention_mask": attention_mask,
-            "bert_label": bert_label,
-            "segment_label": segment_label,
-            "is_next": is_next_label,
-        }
-
-        return {key: torch.tensor(value) for key, value in output.items()}
-
-    def random_word(self, sentence):
-        """ mask tokens, return tokens_ids and labels"""
-        tokens = sentence.split()
-        output_label = []
-
-        for i, token in enumerate(tokens):
+        for i, token_id in enumerate(token_ids):
             prob = random.random()
             if prob < 0.15:
                 prob /= 0.15
 
-                # 80% randomly change token to mask token
                 if prob < 0.8:
-                    tokens[i] = self.tokenizer.convert_tokens_to_ids(self.tokenizer.mask_token)
-
-                # 10% randomly change token to random token
+                    # 80% randomly change token to mask token
+                    token_ids[i] = self.tokenizer.mask_token_id
                 elif prob < 0.9:
-                    tokens[i] = random.choice(list(self.tokenizer.vocab.values()))
-
-                # 10% randomly change token to current token
+                    # 10% randomly change token to a random token
+                    token_ids[i] = random.randint(0, len(self.tokenizer) - 1)
                 else:
-                    tokens[i] = self.tokenizer.convert_tokens_to_ids(token)
+                    # 10% stay the same
+                    pass
 
-                output_label.append(self.tokenizer.convert_tokens_to_ids(token))
+                masked_lm_label.append(token_id)
 
             else:
-                tokens[i] = self.tokenizer.convert_tokens_to_ids(token)
-                output_label.append(0)
+                masked_lm_label.append(self.tokenizer.pad_token_id)
 
-        return tokens, output_label
+        return token_ids, masked_lm_label
 
-    def random_sent(self, index):
-        t1, t2 = self.get_corpus_line(index)
-
-        if random.random() > 0.5:
-            return t1, t2, 1
+    def get_nsp_pair(self, index):
+        """
+        whenchoosing the sentences A and B for each pretraining example, 50% of the time B is the actual
+        next sentence that follows A (labeled as IsNext), and 50% of the time it is a random sentence from
+        the corpus (labeled as NotNext).
+        """
+        sentence_a = self.data_source[index]
+        is_next = random.random() > 0.5
+        if is_next:
+            sentence_b = self.data_source[index + 1]
         else:
-            return t1, self.get_random_line(), 0
+            sentence_b = self.data_source[random.randint(0, len(self.data_source) - 1)]
 
-    def get_corpus_line(self, item):
-        if self.on_memory:
-            t1, t2 = self.lines[item]
-            if not t1 or not t2:
-                return self.get_corpus_line(item + 1)
-            return t1, t2
-        else:
-            line = self.file.__next__()
-            while not line.strip():
-                line = self.file.__next__()
+        # we suppose that the input is a dictionary with a key "text"
+        # otherwise, check _load_* or dataset preparation
+        assert isinstance(sentence_a, dict) and isinstance(sentence_b, dict)
+        assert "text" in sentence_a and "text" in sentence_b
+        return sentence_a["text"], sentence_b["text"], is_next
 
-            parts = line[:-1].split("\t")
-            if len(parts) < 2:
-                return self.get_corpus_line(item + 1)
+    def __getitem__(self, index):
+        sentence_a, sentence_b, is_next = self.get_nsp_pair(index)
+        masked_sentence_a, sentence_a_labels = self.mask_sentence(sentence_a)
+        masked_sentence_b, sentence_b_labels = self.mask_sentence(sentence_b)
 
-            t1, t2 = parts
-            return t1, t2
-
-    def get_random_line(self):
-        if self.on_memory:
-            while True:
-                line = self.lines[random.randrange(len(self.lines))]
-                if len(line) > 1 and line[1].strip():
-                    return line[1]
-        else:
-            while True:
-                line = self.file.__next__()
-                if line is None:
-                    self.file.close()
-                    self.file = open(self.corpus_path, "r", encoding=self.encoding)
-                    for _ in range(random.randint(self.corpus_lines if self.corpus_lines < 1000 else 1000)):
-                        self.random_file.__next__()
-                    line = self.random_file.__next__()
-
-                parts = line[:-1].split("\t")
-                if len(parts) > 1 and parts[1].strip():
-                    return parts[1]
-
-
-
-# load bert-pertain dataset: book corpus and English wikipedia
-def split_into_sentences(text):  # with nltk
-    return nltk.sent_tokenize(text)
-
-
-def generate_sentence_pairs(sentences):
-    pairs = []
-    for i in range(0, len(sentences) - 1, 2):
-        # pair ont sentence with its next sentence
-        if i + 1 < len(sentences):
-            # ensure sentences are not empty to avoid empty lines
-            sentence1 = sentences[i].strip()
-            sentence2 = sentences[i + 1].strip()
-            if sentence1 and sentence2:  # Skip empty sentences
-                pairs.append(f"{sentence1}\t{sentence2}")
-    return pairs
-
-
-def save_to_file(pairs, file_path):
-    with open(file_path, "w", encoding="utf-8") as f:
-        for pair in pairs:
-            # Ensure the pair is not empty or just whitespace
-            if pair.strip():
-                f.write(pair + "\n")
-
-
-def load_bookcorpus_wikipedia(book_loading_ratio=0.1, wiki_loading_ratio=1 / 41):
-
-    import nltk
-    nltk.download("punkt")
-    nltk.download('punkt_tab')
-
-    bookcorpus_path = config.base_dir / "dataset" / "bookcorpus_sentences.txt"
-    wikipedia_path = config.base_dir / "dataset" / "wikipedia_sentences.txt"
-
-    if not config.train_dataset.exists():
-        if not bookcorpus_path.exists():
-            # load BookCorpus, only load 10% data
-            num_book_files = ceil(10 * book_loading_ratio)
-            book_urls = [
-                f"https://hf-mirror.com/datasets/bookcorpus/bookcorpus/resolve/refs%2Fconvert%2Fparquet/plain_text/train/000{i}.parquet?download=true"
-                for i in range(num_book_files)
-            ]
-            print("Loading BookCorpus URLs:", book_urls)
-
-            bookcorpus_ds = load_dataset("parquet", data_files=book_urls, split="train")
-            bookcorpus_texts = [example["text"] for example in bookcorpus_ds]
-
-            # split into sentences
-            bookcorpus_sentences = []
-            for text in bookcorpus_texts:
-                bookcorpus_sentences.extend(split_into_sentences(text))
-
-            bookcorpus_pairs = generate_sentence_pairs(bookcorpus_sentences)
-
-            save_to_file(bookcorpus_pairs, bookcorpus_path)
-
-        if not wikipedia_path.exists():
-            # load English Wikipedia,only load 1/41 data
-            num_wiki_files = ceil(41 * wiki_loading_ratio)
-
-            # data structure of wikipedia
-            features = Features(
-                {
-                    "id": Value("string"),
-                    "url": Value("string"),
-                    "title": Value("string"),
-                    "text": Value("string"),
-                }
-            )
-            wiki_urls = [
-                f"https://huggingface.co/datasets/wikimedia/wikipedia/resolve/refs%2Fconvert%2Fparquet/20231101.en/train/000{i}.parquet"  # use version-20231101.en for Wikipedia(latest in wikimedia in huggingface)
-                for i in range(num_wiki_files)
-            ]
-            print("Loading Wikipedia URLs:", wiki_urls)
-            # extract train data
-            wikipedia_ds = load_dataset(
-                "parquet", data_files=wiki_urls, split="train", features=features
-            )
-            wikipedia_texts = [example["text"] for example in wikipedia_ds]
-
-            wikipedia_sentences = []
-            for text in wikipedia_texts:
-                wikipedia_sentences.extend(split_into_sentences(text))
-
-            wikipedia_pairs = generate_sentence_pairs(wikipedia_sentences)
-
-            save_to_file(wikipedia_pairs, wikipedia_path)
-
-        with open(config.train_dataset, "w", encoding="utf-8") as outfile:
-            with open(bookcorpus_path, "r", encoding="utf-8") as infile1:
-                outfile.write(infile1.read())
-            with open(wikipedia_path, "r", encoding="utf-8") as infile2:
-                outfile.write(infile2.read())
-
-
-def _load_sst2(tokenizer, loading_ratio, num_proc, splits, **kwargs):
-    """
-    load and return SST-2 's DataLoader
-    :param tokenizer:  text process, BERT tokenizer
-    :param loading_ratio: ratio of loading data
-    :param num_proc: number of processes for data loading
-    :param splits: split of data (such as "train", "validation"）
-    :param kwargs: other parameters
-    :return: DataLoaders' list
-    """
-
-    # check splits
-    if not splits or splits != ["train", "validation"]:
-        raise ValueError('Splits must be ["train", "validation"] or None.')
-
-    # load with function from datasets library
-    dataset = load_dataset("glue", "sst2", num_proc=num_proc)
-    # compute subset size
-    total_samples = len(dataset["train"])  # 80137 rows
-    subset_size = int(loading_ratio * total_samples)
-
-    train_size = len(dataset["train"])
-    valid_size = len(dataset["validation"])
-
-    # make sure subset size is not larger than the original size
-    train_subset_size = min(subset_size, train_size)
-    valid_subset_size = min(subset_size, valid_size)
-
-    train_data = dataset["train"].select(range(train_subset_size))
-    valid_data = dataset["validation"].select(range(valid_subset_size))
-
-    def tokenize_function(examples):
-        return tokenizer(
-            examples["sentence"], padding="max_length", truncation=True, max_length=128
+        input_ids = (
+            [self.tokenizer.cls_token_id]
+            + masked_sentence_a
+            + [self.tokenizer.sep_token_id]
+            + masked_sentence_b
+            + [self.tokenizer.sep_token_id]
         )
 
-    # tokenization
-    tokenized_train = train_data.map(tokenize_function, batched=True)
-    tokenized_valid = valid_data.map(tokenize_function, batched=True)
+        labels = (
+            [self.tokenizer.pad_token_id]
+            + sentence_a_labels
+            + [self.tokenizer.pad_token_id]
+            + sentence_b_labels
+            + [self.tokenizer.pad_token_id]
+        )
 
-    # DataLoader format
+        segment_label = [0] * (1 + len(masked_sentence_a) + 1) + [1] * (
+            len(masked_sentence_b) + 1
+        )
+
+        return PretrainDataSample(
+            input_ids=torch.tensor(input_ids, dtype=torch.long),
+            token_type_ids=torch.tensor(segment_label, dtype=torch.long),
+            labels=torch.tensor(labels, dtype=torch.long),
+            is_next=torch.tensor(is_next, dtype=torch.long),
+        )
+
+
+def collate_fn(batch: List[PretrainDataSample], pad_token_id: int):
+    input_ids = pad_sequence(
+        [item.input_ids for item in batch], padding_value=pad_token_id, batch_first=True
+    )
+    token_type_ids = pad_sequence(
+        [item.token_type_ids for item in batch],
+        padding_value=0,
+        batch_first=True,
+    )
+    labels = pad_sequence(
+        [item.labels for item in batch], padding_value=pad_token_id, batch_first=True
+    )
+    is_next = pad_sequence(
+        [item.is_next for item in batch],
+        padding_value=False,
+        batch_first=True,
+    )
+
+    return PretrainDataSample(
+        input_ids=input_ids,
+        token_type_ids=token_type_ids,
+        labels=labels,
+        is_next=is_next,
+    )
+
+
+def _load_wikipedia(tokenizer, loading_ratio, num_proc, splits):
+    if not splits is None and splits != ["train"]:
+        raise ValueError('Splits must be ["train"] or None.')
+
+    def tokenize(example):
+        if not isinstance(example["text"], list):
+            text_list = [example["text"]]
+        else:
+            text_list = example["text"]
+        sentences = [nltk.sent_tokenize(t) for t in text_list]
+        token_ids = tokenizer(
+            [t for s in sentences for t in s],
+            padding="longest",
+            truncation=True,
+            max_length=config.max_len,
+        ).input_ids
+        return {"text": token_ids}
+
+    dataset = datasets.load_dataset("wikimedia/wikipedia", "20231101.en", split="train")
+    subset = dataset.select(range(int(loading_ratio * len(dataset)))).map(
+        tokenize,
+        load_from_cache_file=True,
+        num_proc=num_proc,
+        batched=True,
+        remove_columns=dataset.column_names,
+    )
+
+    return [
+        DataLoader(
+            PretrainDataset(subset, tokenizer=tokenizer),
+            batch_size=config.PretrainingConfig.batch_size,
+            collate_fn=partial(collate_fn, pad_token_id=tokenizer.pad_token_id),
+            shuffle=True,
+        )
+    ]
+
+
+def _load_bookcorpus(tokenizer, loading_ratio, num_proc, splits):
+    if not splits is None and splits != ["train"]:
+        raise ValueError('Splits must be ["train"] or None.')
+
+    def tokenize(example):
+        example["text"] = tokenizer(
+            example["text"],
+            padding="longest",
+            truncation=True,
+            max_length=config.max_len,
+        ).input_ids
+        return example
+
+    # 10 files in total, but we may just use part of them
+    URLS = [
+        f"https://hf-mirror.com/datasets/bookcorpus/bookcorpus/resolve/refs%2Fconvert%2Fparquet/plain_text/train/000{i}.parquet?download=true"
+        for i in range(ceil(loading_ratio * 10))
+    ]
+
+    dl_manager = datasets.DownloadManager("bookcorpus")
+    paths = dl_manager.download(URLS)
+    print("Downloaded at ", paths)
+
+    # 74004228 rows in total, see https://huggingface.co/datasets/bookcorpus/bookcorpus
+    dataset = (
+        datasets.load_dataset(
+            "parquet", data_files=paths, split="train", num_proc=num_proc
+        )
+        .select(range(int(loading_ratio * 74004228)))
+        .map(tokenize, load_from_cache_file=True, num_proc=num_proc, batched=True)
+    )
+
+    return [
+        DataLoader(
+            PretrainDataset(dataset, tokenizer=tokenizer),
+            batch_size=config.PretrainingConfig.batch_size,
+            collate_fn=partial(collate_fn, pad_token_id=tokenizer.pad_token_id),
+            shuffle=True,
+        )
+    ]
+
+
+def _load_sst2(tokenizer, loading_ratio, num_proc, splits):
+    all_splits = ["train", "validation", "test"]
+    if splits is None:
+        splits = all_splits
+    elif not set(splits).issubset(all_splits):
+        raise ValueError(f"Splits should only contain some of {all_splits}")
+
+    dataset = datasets.load_dataset("glue", "sst2", num_proc=num_proc)
+
     def collate_fn(batch):
-        input_ids = [item["input_ids"] for item in batch]
-        attention_mask = [item["attention_mask"] for item in batch]
-        labels = [item["label"] for item in batch]
-
-        return (
-            torch.tensor(input_ids, dtype=torch.long),
-            torch.tensor(attention_mask, dtype=torch.long),
-            torch.tensor(labels, dtype=torch.long),
-        )
+        sentences, labels = [], []
+        for item in batch:
+            sentences.append(tokenizer.cls_token + item["sentence"])
+            labels.append(item["label"])
+        tokens = tokenizer(
+            sentences,
+            return_tensors="pt",
+            padding="longest",
+            truncation=True,
+            max_length=config.max_len,
+        ).input_ids
+        return pad_sequence(
+            tokens, batch_first=True, padding_value=tokenizer.pad_token_id
+        ), torch.tensor(labels, dtype=torch.long)
 
     dataloaders = []
-
-    # create DataLoader for each split
-    for split_data in [(tokenized_train, "train"), (tokenized_valid, "validation")]:
-        tokenized_split, split_name = split_data
+    for split in splits:
+        ds = dataset[split]
+        subset = ds.select(range(int(loading_ratio * len(ds))))
         dataloaders.append(
             DataLoader(
-                tokenized_split,
-                batch_size=config.FinetuningConfig.batch_size,
+                subset,
+                config.FinetuningConfig.batch_size,
                 collate_fn=collate_fn,
-                shuffle=split_name == "train",
+                shuffle=split == "train",
             )
         )
 
@@ -371,22 +279,14 @@ def load_data(
     splits: list = None,
     **kwargs,
 ):
-    """
-    Load different datasets
-    :param name: name of dataset
-    :param loading_ratio: ratio of loading data
-    :param num_proc: number of processes for data loading
-    :param splits: split of data (such as "train", "validation"）
-    :param kwargs: other parameters
-    :return: tokenizer and dataloaders
-    """
-    # Load model directly
     from transformers import AutoTokenizer
 
     tokenizer = AutoTokenizer.from_pretrained("google-bert/bert-base-uncased")
 
-    dispatch = {
-        "sst2": _load_sst2,  # SST-2 load
+    dispatch = {  # _load_* should return a list of dataloader
+        "sst2": _load_sst2,
+        "bookcorpus": _load_bookcorpus,
+        "wikipedia": _load_wikipedia,
     }
 
     if name.lower() not in dispatch:
