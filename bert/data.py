@@ -20,6 +20,7 @@ class PretrainDataSample:
     """
 
     input_ids: torch.Tensor
+    attention_mask: torch.Tensor
     token_type_ids: torch.Tensor
     labels: torch.Tensor
     is_next: torch.Tensor
@@ -76,7 +77,7 @@ class PretrainDataset(Dataset):
 
     def get_nsp_pair(self, index):
         """
-        whenchoosing the sentences A and B for each pretraining example, 50% of the time B is the actual
+        when choosing the sentences A and B for each pretraining example, 50% of the time B is the actual
         next sentence that follows A (labeled as IsNext), and 50% of the time it is a random sentence from
         the corpus (labeled as NotNext).
         """
@@ -105,6 +106,7 @@ class PretrainDataset(Dataset):
             + masked_sentence_b
             + [self.tokenizer.sep_token_id]
         )
+        attention_mask = [1 if token_id != self.tokenizer.pad_token_id else 0 for token_id in input_ids]
 
         labels = (
             [self.tokenizer.pad_token_id]
@@ -120,6 +122,7 @@ class PretrainDataset(Dataset):
 
         return PretrainDataSample(
             input_ids=torch.tensor(input_ids, dtype=torch.long),
+            attention_mask=torch.tensor(attention_mask, dtype=torch.long),
             token_type_ids=torch.tensor(segment_label, dtype=torch.long),
             labels=torch.tensor(labels, dtype=torch.long),
             is_next=torch.tensor(is_next, dtype=torch.long),
@@ -130,6 +133,9 @@ def collate_fn(batch: List[PretrainDataSample], pad_token_id: int):
     input_ids = pad_sequence(
         [item.input_ids for item in batch], padding_value=pad_token_id, batch_first=True
     )
+    attention_mask = pad_sequence(
+        [item.attention_mask for item in batch], padding_value= 0, batch_first=True
+    )
     token_type_ids = pad_sequence(
         [item.token_type_ids for item in batch],
         padding_value=0,
@@ -139,13 +145,14 @@ def collate_fn(batch: List[PretrainDataSample], pad_token_id: int):
         [item.labels for item in batch], padding_value=pad_token_id, batch_first=True
     )
     is_next = pad_sequence(
-        [item.is_next for item in batch],
+        [torch.tensor([item.is_next], dtype=torch.long) for item in batch],
         padding_value=False,
         batch_first=True,
     )
 
     return PretrainDataSample(
         input_ids=input_ids,
+        attention_mask=attention_mask,
         token_type_ids=token_type_ids,
         labels=labels,
         is_next=is_next,
@@ -170,18 +177,33 @@ def _load_wikipedia(tokenizer, loading_ratio, num_proc, splits):
         ).input_ids
         return {"text": token_ids}
 
-    dataset = datasets.load_dataset("wikimedia/wikipedia", "20231101.en", split="train")
-    subset = dataset.select(range(int(loading_ratio * len(dataset)))).map(
+
+    URLS = [
+        f"https://huggingface.co/datasets/wikimedia/wikipedia/resolve/refs%2Fconvert%2Fparquet/20231101.en/train/000{i}.parquet"
+        # use version-20231101.en for Wikipedia(latest in wikimedia in huggingface), which has 41 parquet files
+        for i in range(ceil(loading_ratio * 41))
+    ]
+
+    dl_manager = datasets.DownloadManager("wikipedia")
+    paths = dl_manager.download(URLS)
+    print("Downloaded at ", paths)
+
+    dataset_ld = datasets.load_dataset(
+            "parquet", data_files=paths, split="train", num_proc=num_proc
+        )
+
+
+    dataset = (dataset_ld.map(
         tokenize,
         load_from_cache_file=True,
         num_proc=num_proc,
         batched=True,
-        remove_columns=dataset.column_names,
+        remove_columns = dataset_ld.column_names
+        )
     )
-
     return [
         DataLoader(
-            PretrainDataset(subset, tokenizer=tokenizer),
+            PretrainDataset(dataset, tokenizer=tokenizer),
             batch_size=config.PretrainingConfig.batch_size,
             collate_fn=partial(collate_fn, pad_token_id=tokenizer.pad_token_id),
             shuffle=True,
@@ -217,7 +239,6 @@ def _load_bookcorpus(tokenizer, loading_ratio, num_proc, splits):
         datasets.load_dataset(
             "parquet", data_files=paths, split="train", num_proc=num_proc
         )
-        .select(range(int(loading_ratio * 74004228)))
         .map(tokenize, load_from_cache_file=True, num_proc=num_proc, batched=True)
     )
 

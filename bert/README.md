@@ -1,22 +1,22 @@
 [📖中文 ReadMe](./README_zh.md)
 ## Introduction
 
+In this BERT implementation, we will demonstrate how to conduct pre-training on the  [BookCorpus](https://huggingface.co/datasets/bookcorpus/bookcorpus) and [Wikipedia](https://huggingface.co/datasets/wikimedia/wikipedia) datasets, load the official pre-trained weights provided by Hugging Face, and fine-tune on the [Stanford Sentiment Treebank (SST-2)](https://nlp.stanford.edu/~socherr/EMNLP2013_RNTN.pdf) dataset to reproduce the results reported in the original paper.
+
 ## Model details
 
 ### Key differences with GPT
 
-In fact, many of BERT's design choices are intentional, aiming to make it as similar as possible to the original GPT, so that the two methods can be compared with minimal differences. The model size, number of attention heads, and number of layers in BERT_base are the same as GPT; similarly, BERT uses the GeLU activation function instead of ReLU, and uses learnable positional embeddings rather than sine-cosine position encodings.
+In fact, many of the design decisions in BERT were intentionally made to make it as close to GPT as possible so that the two methods could be minimally compared.  For instance, BERT_base matches GPT in model size (e.g., layers, attention heads, and hidden dimensions). Similarly, BERT replaces ReLU with the GeLU activation function and adopts learnable positional embeddings instead of sinusoidal positional encoding. 
 
-However, there are still some differences:
+However, key differences include:
 
-1. BERT uses the original Transformer Encoder and does not require a Decoder. This means that BERT can access both the previous and future context, while GPT can only access the historical context.
-2. BERT's pretraining tasks include MLM (Masked Language Model) and NSP (Next Sentence Prediction), while GPT's pretraining task mainly involves predicting the next word in a given text sequence.
-3. During pretraining, BERT learns embeddings for [SEP], [CLS], and sentence A/B; GPT uses [SEP] and [CLS], but they are only introduced during fine-tuning.
-4. Training details (including datasets and learning rate settings).
+1. **Self-Attention Mechanism**: BERT employs bidirectional self-attention to capture contextual information from both directions, whereas GPT uses causal self-attention (masked to prevent future token visibility). In BERT, masks are applied only for padding.
+2. **Tokenization**: BERT utilizes WordPiece tokenization, contrasting with GPT's Byte-Pair Encoding (BPE).
+3. **Training Objectives**: BERT is pre-trained with Masked Language Modeling (MLM) and Next Sentence Prediction (NSP), while GPT and the original Transformer rely on standard autoregressive language modeling.
+4. **Special Tokens**: During pre-training, BERT learns embeddings for [SEP]**, **[CLS], and sentence A/B embeddings. In GPT, [SEP] and [CLS] are introduced only during fine-tuning.
 
-
-
-### MLM and NSP
+### Pre-training Tasks
 
 #### Masked Language Model（MLM）
 
@@ -35,12 +35,6 @@ Randomly 15% of input token will be changed into something, based on under sub-r
 2. Randomly 10% of tokens, gonna be a `[RANDOM]` token(another word)
 3. Randomly 10% of tokens, will be remain as same. But need to be predicted.
 
-Randomly 15% of input token will be changed into something, based on under sub-rules
-
-1. Randomly 80% of tokens, gonna be a `[MASK]` token
-2. Randomly 10% of tokens, gonna be a `[RANDOM]` token(another word)
-3. Randomly 10% of tokens, will be remain as same. But need to be predicted.
-
 #### Next Sentence Prediction(NSP)
 
 > Original Paper : 3.3.2 Task #2: Next Sentence Prediction
@@ -53,9 +47,7 @@ Input = [CLS] the man heading to the store [SEP] penguin [MASK] are flight ##les
 Label = NotNext
 ```
 
-"Is this sentence can be continuously connected?"
-
-understanding the relationship, between two text sentences, which is not directly captured by language modeling
+This is for understanding the relationship between two text sentences, which is not directly captured by language modeling.
 
 ##### Rules:
 
@@ -66,33 +58,29 @@ understanding the relationship, between two text sentences, which is not directl
 
 ## [Pre-training](./pretrain.ipynb)
 
-The BERT model in the paper is pretrained on the BookCorpus and Wikipedia datasets. In this implementation, I load the first parquet file of BookCorpus and Wikipedia and convert them into one txt file as **corpus.txt**. 
-
-The format of the corpus consists of two sentences on the same line, implicitly separated by a tab (`\t`), as shown in the example below:
-
-```
-Welcome to the \t the jungle\n
-I can stay \t here all night\n
-```
-
-BERT uses the WordPiece method for tokenization, first generating a vocabulary by tokenizing the dataset; then, the model parameters are set and the BERT model is constructed for training. For the specific process, refer to pretrain.ipynb. The optimizer used for pretraining is Adam, with a learning rate (lr) of 1e-4, β1 and β2 set to 0.9 and 0.999, respectively, and an L2 weight decay of 0.01.	
+According to the settings described in the paper  [BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding](https://arxiv.org/abs/1810.04805) , BERT was pre-trained on BooksCorpus and Wikipedia datasets using the AdamW optimizer（$w = 0.01, \text{max-lr} = 1 \times 10^{-4}$）. During training, a linear warmup learning rate schedule was employed: the learning rate linearly increases over the first 10,000 steps, followed by a linear decay schedule.
 
 ## [Fine-tuning](./finetune.ipynb) 
 
-After training on the dataset, the BERT model can be considered to have learned some language abilities. In this implementation, fine-tuning is performed on the SST-2 dataset for a text sentiment classification task. This requires adding a linear binary classification layer to the end of the original BERT model architecture. I load the weights of [bert-base-uncased](https://huggingface.co/google-bert/bert-base-uncased) from Hugging Face into my model, then fine-tune it on the dataset. The optimizer used is AdamW, with a learning rate (lr) of 4e-5, β1 and β2 set to the default values of 0.9 and 0.999, and the weight decay is also 0.01.
+After pre-training, BERT has acquired robust language understanding capabilities, which can be adapted to new tasks through fine-tuning. During fine-tuning, only minor architectural adjustments are required, such as adding task-specific classification heads for downstream tasks.
 
-## [Inferencing](./inference.ipynb) 
+Since optimal hyperparameter values are task-specific, the original paper provided hyperparameter ranges for fine-tuning across different tasks:
 
-Load the specified model and perform inference for the sentiment classification task on a given text.
+- **Batch size**: 16, 32
+- **Learning rate **：5e-5, 3e-5, 2e-5
+- **Number of epochs**: 2, 3, 4
 
+In this implementation, we use the AdamW optimizer（$w = 0.01, \text{max-lr} = 4 \times 10^{-5}$） with a batch size of 32 and 3 epochs. For learning rate scheduling, we adopt a linear warmup strategy: the learning rate linearly increases over the first 10,000 steps, followed by a linear decay schedule.
 
+## Appendix
 
-## Reference
+### 如何下载预训练好的BERT？
 
-This implementation is based on the following:
+Run the following command in the terminal:
 
-1.[google-research/bert: TensorFlow code and pre-trained models for BERT](https://github.com/google-research/bert)
+```bash
+pip install -U huggingface-cli
+export HF_ENDPOINT=https://hf-mirror.com
+huggingface-cli download bert-base-uncased --local-dir path/to/pretrained_dir
+```
 
-2.[codertimo/BERT-pytorch: Google AI 2018 BERT pytorch implementation](https://github.com/codertimo/BERT-pytorch)
-
-3.[transformers/src/transformers/models/bert at 0de15c988b0d27758ce360adb2627e9ea99e91b3 · huggingface/transformers](https://github.com/huggingface/transformers/tree/0de15c988b0d27758ce360adb2627e9ea99e91b3/src/transformers/models/bert)

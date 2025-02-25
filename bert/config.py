@@ -28,20 +28,14 @@ max_len = 512
 dropout = 0.1
 intermediate_size = 3072
 
-# optimizer parameters
-learning_rate = 1e-4
-adam_weight_decay = 0.01
-adam_beta1 = 0.9
-adam_beta2 = 0.999
-total_steps = 1000000
-
 @dataclass
 class PretrainingConfig:
-    n_epoch = 5
+    n_epoch = 2
     batch_size = 2
     lr = 1e-4
     weight_decay = 0.01
     warmup_steps = 10000
+    checkpoint_freq = 5
 
 
 @dataclass
