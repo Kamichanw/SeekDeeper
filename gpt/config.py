@@ -12,9 +12,9 @@ torch.manual_seed(3407)
 
 # model parameter setting
 max_len = 512
-d_model = 768
-n_layer = 12
-n_head = 12
+hidden_size = 768
+num_hidden_layers = 12
+num_attention_heads = 12
 vocab_size = 40478
 dropout = 0.1
 

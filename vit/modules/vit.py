@@ -97,7 +97,7 @@ class ViTForImageClassification(nn.Module):
         # In PyTorch, classifier will be initialized to a zero initialized linear layer.
         # In original paper, classifier should be a zero-initialized matrix without bias.
         # Anyway, we will replace it to be consistent with paper later, so it doesn’t matter how initialize it here.
-        
+
         nn.init.normal_(self.classifier.weight, 0, 0.02)
         nn.init.zeros_(self.classifier.bias)
 
@@ -109,75 +109,40 @@ class ViTForImageClassification(nn.Module):
 
     @classmethod
     def from_pretrained(cls, model_name_or_path: str, num_labels=10):
-        support_models = {
-            "vit-base-patch16-224",
-            "vit-large-patch16-224",
-            "vit-huge-patch14-224",
-        }
-
-        model_name = model_name_or_path
-        if os.path.isdir(model_name_or_path):
-            basename = os.path.basename(model_name_or_path)
-            for model in sorted(support_models, key=len, reverse=True):
-                if model in basename:
-                    model_name = model
-                    break
-            else:
-                raise ValueError(
-                    f"To specify the custom ViT model structure, the dir name should be one of {support_models} "
-                )
-        else:
-            for model in support_models:
-                if model_name_or_path.endswith(model):
-                    model_name = model
-                    break
-            else:
-                raise ValueError(f"Unsupported model {model_name} or dir not found")
 
         from transformers import (
             ViTForImageClassification as HFViTForImageClassification,
         )
-
-        print("Loading weights from pretrained ViT: %s" % model_name)
-
-        # Define configurations based on the model type
-        config_args = {
-            "vit-base-patch16-224": dict(
-                num_hidden_layers=12,
-                num_attention_heads=12,
-                hidden_size=768,
-                intermediate_size=3072,
-            ),
-            "vit-large-patch16-224": dict(
-                num_hidden_layers=24,
-                num_attention_heads=16,
-                hidden_size=1024,
-                intermediate_size=4096,
-            ),
-            "vit-huge-patch14-224": dict(
-                num_hidden_layers=32,
-                num_attention_heads=16,
-                hidden_size=1280,
-                intermediate_size=5120,
-            ),
-        }[model_name]
-
-        model = cls(num_labels=num_labels, **config_args)
-        sd = model.state_dict()
 
         # Load from HuggingFace pretrained weights
         model_hf = HFViTForImageClassification.from_pretrained(
             model_name_or_path, num_labels=num_labels, ignore_mismatched_sizes=True
         )
         sd_hf = model_hf.state_dict()
+        config_hf = model_hf.config
+
+        model = cls(
+            num_labels=num_labels,
+            image_size=config_hf.image_size,
+            patch_size=config_hf.patch_size,
+            hidden_size=config_hf.hidden_size,
+            num_channels=config_hf.num_channels,
+            num_hidden_layers=config_hf.num_hidden_layers,
+            num_attention_heads=config_hf.num_attention_heads,
+            intermediate_size=config_hf.intermediate_size,
+            dropout=config_hf.hidden_dropout_prob,
+        )
+        sd = model.state_dict()
 
         # Ensure all the parameters align between HuggingFace model and our model
-        sd_keys = sd.keys()
-        sd_keys_hf = sd_hf.keys()
+        sd_keys = set(sd.keys())
+        sd_keys_hf = set(sd_hf.keys())
 
-        assert len(sd_keys_hf) == len(
-            sd_keys
-        ), f"Mismatch in number of keys: {len(sd_keys_hf)} vs {len(sd_keys)}"
+        if sd_keys != sd_keys_hf:
+            raise ValueError(
+                "Some keys are missing in one of the models. "
+                f"HF: {sd_keys - sd_keys_hf}, Ours: {sd_keys_hf - sd_keys}"
+            )
 
         for k in sd_keys:
             assert (

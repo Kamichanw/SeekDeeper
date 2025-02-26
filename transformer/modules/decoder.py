@@ -6,20 +6,24 @@ from .layers import *
 
 class DecoderLayer(nn.Module):
 
-    def __init__(self, d_model, ffn_hidden, n_head, dropout):
+    def __init__(self, hidden_size, ffn_hidden, num_attention_heads, dropout):
         super(DecoderLayer, self).__init__()
         self.self_attn = MultiheadAttention(
-            d_model=d_model, n_head=n_head, dropout=dropout
+            hidden_size=hidden_size,
+            num_attention_heads=num_attention_heads,
+            dropout=dropout,
         )
-        self.ln_1 = LayerNorm(normalized_shape=d_model)
+        self.ln_1 = LayerNorm(normalized_shape=hidden_size)
 
-        self.enc_dec_attention = MultiheadAttention(d_model=d_model, n_head=n_head)
-        self.ln_2 = LayerNorm(normalized_shape=d_model)
+        self.enc_dec_attention = MultiheadAttention(
+            hidden_size=hidden_size, num_attention_heads=num_attention_heads
+        )
+        self.ln_2 = LayerNorm(normalized_shape=hidden_size)
 
         self.ffn = PositionwiseFeedForward(
-            d_model=d_model, hidden=ffn_hidden, dropout=dropout
+            hidden_size=hidden_size, hidden=ffn_hidden, dropout=dropout
         )
-        self.ln_3 = LayerNorm(normalized_shape=d_model)
+        self.ln_3 = LayerNorm(normalized_shape=hidden_size)
 
     def forward(self, dec, enc, tgt_mask, src_mask):
         # 1. Apply self attention
@@ -49,10 +53,10 @@ class DecoderLayer(nn.Module):
 class Decoder(nn.Module):
     def __init__(
         self,
-        d_model,
+        hidden_size,
         ffn_hidden,
-        n_head,
-        n_layer,
+        num_attention_heads,
+        num_hidden_layers,
         dropout,
     ):
         super().__init__()
@@ -60,12 +64,12 @@ class Decoder(nn.Module):
         self.layers = nn.ModuleList(
             [
                 DecoderLayer(
-                    d_model=d_model,
+                    hidden_size=hidden_size,
                     ffn_hidden=ffn_hidden,
-                    n_head=n_head,
+                    num_attention_heads=num_attention_heads,
                     dropout=dropout,
                 )
-                for _ in range(n_layer)
+                for _ in range(num_hidden_layers)
             ]
         )
 

@@ -1,5 +1,5 @@
 from math import ceil
-from typing import Optional, Sequence
+from typing import Sequence
 
 import datasets
 from datasets import DownloadManager
@@ -133,7 +133,7 @@ def _load_sst2(tokenizer: BPETokenizer, loading_ratio, num_proc, splits):
 def load_data(
     name: str,
     loading_ratio: float = 1,
-    num_proc: int = 0,
+    num_proc: int = 1,
     splits: Sequence[str] = None,
 ):
     dispatch = {  # _load_* should return a list of dataloader

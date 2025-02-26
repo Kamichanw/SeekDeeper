@@ -38,11 +38,11 @@ class Transformer(nn.Module):
         tgt_pad_idx,
         src_vocab_size,
         tgt_vocab_size,
-        d_model,
-        n_head,
+        hidden_size,
+        num_attention_heads,
         max_len,
         ffn_hidden,
-        n_layer,
+        num_hidden_layers,
         dropout,
     ):
         """
@@ -53,11 +53,11 @@ class Transformer(nn.Module):
         :param tgt_sos_idx: Start-of-sequence index for the target sequences.
         :param enc_voc_size: Vocabulary size of the encoder.
         :param dec_voc_size: Vocabulary size of the decoder.
-        :param d_model: Dimensionality of the model.
-        :param n_head: Number of attention heads.
+        :param hidden_size: Dimensionality of the model.
+        :param num_attention_heads: Number of attention heads.
         :param max_len: Maximum sequence length.
         :param ffn_hidden: Dimensionality of the feed-forward network.
-        :param n_layer: Number of layers in the encoder and decoder.
+        :param num_hidden_layers: Number of layers in the encoder and decoder.
         :param dropout: Dropout probability.
         """
 
@@ -66,36 +66,36 @@ class Transformer(nn.Module):
         self.tgt_pad_idx = tgt_pad_idx
 
         self.src_emb = TransformerEmbedding(
-            d_model=d_model,
+            hidden_size=hidden_size,
             max_len=max_len,
             vocab_size=src_vocab_size,
             dropout=dropout,
         )
 
         self.tgt_emb = TransformerEmbedding(
-            d_model=d_model,
+            hidden_size=hidden_size,
             dropout=dropout,
             max_len=max_len,
             vocab_size=tgt_vocab_size,
         )
 
         self.encoder = Encoder(
-            d_model=d_model,
-            n_head=n_head,
+            hidden_size=hidden_size,
+            num_attention_heads=num_attention_heads,
             ffn_hidden=ffn_hidden,
             dropout=dropout,
-            n_layer=n_layer,
+            num_hidden_layers=num_hidden_layers,
         )
 
         self.decoder = Decoder(
-            d_model=d_model,
-            n_head=n_head,
+            hidden_size=hidden_size,
+            num_attention_heads=num_attention_heads,
             ffn_hidden=ffn_hidden,
             dropout=dropout,
-            n_layer=n_layer,
+            num_hidden_layers=num_hidden_layers,
         )
 
-        self.linear = nn.Linear(d_model, tgt_vocab_size, bias=False)
+        self.linear = nn.Linear(hidden_size, tgt_vocab_size, bias=False)
 
         self._reset_parameters()
 

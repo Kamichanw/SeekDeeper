@@ -1,6 +1,6 @@
 __pycache__/
 checkpoints/
-bert/
 **/datasets/**
 !**/datasets/**/*.py
 !**/datasets/**/*.json
+.idea/

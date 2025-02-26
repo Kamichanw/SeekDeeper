@@ -29,7 +29,7 @@ Encoder 和 Decoder 分别使用了两种 mask，`src_mask` 和 `tgt_mask`。`sr
 \text{div-term} = 10000^{2i/d_{\text{model}}} = \exp\left(\frac{2i \cdot -\log(10000)}{d_{\text{model}}}\right)
 ```
 
-位置编码对任何序列都是相同的，因此 positional encoding 的 shape 为 `[seq_len, d_model]`。然后根据广播机制与 shape 为 `[batch_size, seq_len, d_model]` 的 input embedding 相加，得到 Encoder 的输入，记作 $x_0$。
+位置编码对任何序列都是相同的，因此 positional encoding 的 shape 为 `[seq_len, hidden_size]`。然后根据广播机制与 shape 为 `[batch_size, seq_len, hidden_size]` 的 input embedding 相加，得到 Encoder 的输入，记作 $x_0$。
 
 ## [Encoder](./modules/encoder.py)
 Encoder 包含多个相同的层。上一层的输出 $x_i$ 以如下途径经过该层（省略了 dropout）：
@@ -52,18 +52,18 @@ Attention 的计算流程如下：
 </div>
 在 Encoder 的 self-attention 中，K、Q、V 均为上一层的输出经过不同线性层得到的。在 Decoder 的 cross-attention 中，K 和 V 来自 Encoder 最后一层的输出，而 Q 是 Decoder 上一层的输出。
 
-为了使模型关注不同位置的不同特征子空间信息，我们需要使用多头注意力。具体来说，将 shape 为 `[batch_size, seq_len, d_model]` 的 K、Q、V 分为 `[batch_size, seq_len, n_head, d_key]`，再交换 `seq_len` 和 `n_head` 两个维度，以便进行 attention 机制中的矩阵乘法。计算了 attention 之后再将结果合并，并通过一个线性层映射到与输入相同的维度。算法的流程如下：
+为了使模型关注不同位置的不同特征子空间信息，我们需要使用多头注意力。具体来说，将 shape 为 `[batch_size, seq_len, hidden_size]` 的 K、Q、V 分为 `[batch_size, seq_len, num_attention_heads, d_key]`，再交换 `seq_len` 和 `num_attention_heads` 两个维度，以便进行 attention 机制中的矩阵乘法。计算了 attention 之后再将结果合并，并通过一个线性层映射到与输入相同的维度。算法的流程如下：
 ```python
 # projection
 K, Q, V = W_k(x), W_q(x), W_v(x)
 
 # split
-d_key = d_model // n_head
-K, Q, V = (K, Q, V).view(batch_size, seq_len, n_head, d_key).transpose(1, 2)
+d_key = hidden_size // num_attention_heads
+K, Q, V = (K, Q, V).view(batch_size, seq_len, num_attention_heads, d_key).transpose(1, 2)
 out = scaled_dot_product_attention(K, Q, V)
 
 # concatenate
-out = out.transpose(1, 2).view(batch_size, seq_len, d_model)
+out = out.transpose(1, 2).view(batch_size, seq_len, hidden_size)
 out = W_cat(out)
 ```
 

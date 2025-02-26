@@ -123,7 +123,7 @@ def _load_cst(tokenizer, loading_ratio, num_proc, splits, **kwargs):
 def load_data(
     name: str,
     loading_ratio: float = 1,
-    num_proc: int = 0,
+    num_proc: int = 1,
     splits: Sequence[str] = None,
     **kwargs,
 ):

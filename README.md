@@ -34,6 +34,11 @@ Official code repositories often include many engineering details, which can be 
       <td><a href="https://github.com/huggingface/transformers/blob/main/src/transformers/models/vit/modeling_vit.py">Huggingface ViT implementation</a></td>
     </tr>
     <tr>
+      <td>Bert</td>
+      <td><a href="https://arxiv.org/pdf/1810.04805">BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding</a></td>
+      <td><a href="https://github.com/huggingface/transformers/blob/main/src/transformers/models/bert/modeling_bert.py">Huggingface Bert implementation</a></td>
+    </tr>
+    <tr>
       <td>GAN</td>
       <td><a href="https://arxiv.org/abs/1406.2661">Generative Adversarial Networks</a></td>
       <td><a href="https://github.com/goodfeli/adversarial">https://github.com/goodfeli/adversarial</a></td>

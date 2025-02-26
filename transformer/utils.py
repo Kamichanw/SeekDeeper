@@ -39,17 +39,17 @@ class WarmupScheduler(torch.optim.lr_scheduler.LRScheduler):
     def __init__(
         self,
         optimizer: Optimizer,
-        d_model: int,
+        hidden_size: int,
         warmup_step: int,
         last_epoch: int = -1,
     ) -> None:
-        self.d_model = d_model
+        self.hidden_size = hidden_size
         self.warmup_step = warmup_step
         super(WarmupScheduler, self).__init__(optimizer, last_epoch)
 
     def get_lr(self):
         return [
-            self.d_model**-0.5
+            self.hidden_size**-0.5
             * min(
                 (self.last_epoch + 1) ** -0.5,
                 (self.last_epoch + 1) * self.warmup_step**-1.5,
@@ -59,7 +59,7 @@ class WarmupScheduler(torch.optim.lr_scheduler.LRScheduler):
 
 @torch.no_grad
 def greedy_search(model, memory, memory_mask, max_len, sos_idx, eos_idx, pad_idx):
-    batch_size, seq_len, d_model = memory.shape
+    batch_size, seq_len, hidden_size = memory.shape
     ys = torch.ones(batch_size, 1, dtype=torch.long, device=memory.device).fill_(
         sos_idx
     )
@@ -97,7 +97,7 @@ def sample(
     pad_idx,
 ):
     device = memory.device
-    batch_size, seq_len, d_model = memory.shape
+    batch_size, seq_len, hidden_size = memory.shape
     ys = torch.ones(batch_size, 1, dtype=torch.long, device=device).fill_(sos_idx)
     ended = torch.zeros(batch_size, dtype=torch.bool, device=device)
 

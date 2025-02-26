@@ -26,17 +26,17 @@ The summary is shown in the table below:
       <td> sinusoidal(mainstream) </td>  
     </tr>  
     <tr>  
-      <td>n_head</td>  
+      <td>num_attention_heads</td>  
       <td>12</td>  
       <td>8</td>  
     </tr>  
     <tr>  
-      <td>n_layer</td>  
+      <td>num_hidden_layers</td>  
       <td>12</td>  
       <td>6 encoder layers, 6 decoder layers</td>  
     </tr>  
     <tr>  
-      <td>d_model</td>  
+      <td>hidden_size</td>  
       <td>768</td>  
       <td>512</td>  
     </tr>  
