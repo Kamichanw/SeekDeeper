@@ -16,7 +16,6 @@ base_dir = Path(__file__).parent.resolve()
 checkpoint_dir = base_dir / "checkpoints"
 os.makedirs(checkpoint_dir, exist_ok=True)
 
-trained_path = checkpoint_dir / "bert_self_trained"
 pretrained_path = "bert-base-uncased"
 
 
@@ -28,14 +27,14 @@ max_len = 512
 dropout = 0.1
 intermediate_size = 3072
 
+
 @dataclass
-class PretrainingConfig:
+class PretrainConfig:
     n_epoch = 2
-    batch_size = 2
+    batch_size = 32
     lr = 1e-4
     weight_decay = 0.01
     warmup_steps = 10000
-    checkpoint_freq = 5
 
 
 @dataclass
@@ -45,7 +44,3 @@ class FinetuningConfig:
     lr = 4e-5
     weight_decay = 0.01
     warmup_steps = 10000
-
-
-
-
