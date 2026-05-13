@@ -1,0 +1,14 @@
+torch
+datasets
+transformers
+huggingface-hub
+python-dotenv
+ftfy
+spacy
+tqdm
+matplotlib
+scikit-learn
+accelerate
+argparse
+tensorboard
+deepspeed
